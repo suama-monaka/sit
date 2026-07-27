@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIT Dash</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="datetime-display" class="datetime-display" aria-live="polite"></div>
+    <main class="app-shell">
+        <section id="login-container" class="container auth-page">
+            <div class="auth-card">
+                <div class="auth-brand">
+                    <h1>SIT Sync</h1>
+                </div>
+                <div class="auth-fields">
+                    <label class="sr-only" for="username_input">学籍番号</label>
+                    <input type="text" id="username_input" name="username" autocomplete="off" spellcheck="false" placeholder="学籍番号">
+                    <label class="sr-only" for="password_input">パスワード</label>
+                    <input type="password" id="password_input" name="password" autocomplete="new-password" placeholder="パスワード">
+                    <button id="sync-btn" type="button" class="action-button">同期を開始</button>
+                </div>
+            </div>
+        </section>
+
+        <section id="main-container" class="container dashboard" style="display:none;">
+            <header class="main-header">
+                <div class="header-left">
+                    <button id="menu-toggle" class="menu-button" type="button" aria-expanded="false" aria-controls="side-drawer" title="メニューを開く">
+                        <img src="ham.svg" alt="メニュー" class="menu-icon">
+                    </button>
+                    <div>
+                        <h2>Weekly Schedule</h2>
+                        <div id="cache-info" class="cache-info">キャッシュ情報なし</div>
+                    </div>
+                </div>
+                <div class="main-actions">
+                    <button id="refresh-btn" class="action-button compact">更新</button>
+                </div>
+            </header>
+
+            <div id="drawer-backdrop" class="drawer-backdrop hidden" tabindex="-1"></div>
+            <aside id="side-drawer" class="side-drawer hidden" aria-hidden="true" role="dialog" aria-label="ショートカットメニュー">
+                <div class="drawer-header">
+                    <div class="drawer-title">ショートカット</div>
+                    <button id="drawer-close" class="drawer-close" type="button" aria-label="閉じる">×</button>
+                </div>
+                <div class="drawer-body">
+                    <a class="drawer-link" href="https://moodle2026.shonan-it.ac.jp/" target="_blank" rel="noopener">Moodle 2026</a>
+                    <a class="drawer-link" href="https://portal.shonan-it.ac.jp/campusweb/" target="_blank" rel="noopener">Campus Square</a>
+                    <a class="drawer-link" href="https://syllabus.shonan-it.ac.jp/" target="_blank" rel="noopener">シラバス</a>
+                    <a class="drawer-link" href="https://syusseki.shonan-it.ac.jp/campusaa/" target="_blank" rel="noopener">Campus Square出席サイト</a>
+                </div>
+            </aside>
+
+            <div id="status-message" class="status-message">キャッシュから読み込み後、自動で最新情報に切り替えます。</div>
+
+            <section class="dashboard-section">
+                <div class="section-title">時間割</div>
+                <div id="schedule-list"></div>
+            </section>
+
+            <section class="dashboard-grid">
+                <div class="dashboard-section">
+                    <div class="section-title">My Courses <span class="section-subtitle">(クリックでMoodle詳細)</span></div>
+                    <div id="course-list"></div>
+                </div>
+                <div class="dashboard-section">
+                    <div class="section-title">Assignments</div>
+                    <div id="task-list"></div>
+                </div>
+            </section>
+
+            <div id="detail-panel" class="detail-panel hidden" role="dialog" aria-modal="true" aria-labelledby="detail-subtitle">
+                <div class="detail-panel-content">
+                    <div class="detail-panel-header">
+                        <div>
+                            <div class="detail-panel-label">授業詳細</div>
+                            <div id="detail-subtitle" class="detail-panel-subtitle">授業を選択してください</div>
+                        </div>
+                        <button id="detail-close" class="detail-close" type="button" aria-label="閉じる">×</button>
+                    </div>
+                    <div class="detail-panel-body">
+                        <div class="detail-row"><strong>授業コード</strong><span id="detail-code">-</span></div>
+                        <div class="detail-row"><strong>授業名</strong><span id="detail-name">-</span></div>
+                        <div class="detail-row"><strong>担当教員</strong><span id="detail-teacher">-</span></div>
+                        <div class="detail-row"><strong>曜日 / 時限</strong><span id="detail-time">-</span></div>
+                        <div class="detail-row"><strong>出席情報</strong><span id="detail-attendance">未取得</span></div>
+                        <div id="detail-attendance-details" class="detail-attendance-details"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+    <div id="app-version" class="app-version">v0.3.4</div>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

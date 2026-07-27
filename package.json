@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "puppeteer": "^24.41.0",
+    "sql.js": "^1.14.1"
+  }
+}
