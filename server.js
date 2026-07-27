@@ -15,7 +15,7 @@ const fetchAssignments = require('./logic/assignments');
 const fetchAttendance = require('./logic/attendance');
 
 const app = express();
-const PORT = 4007;
+const PORT = 10000;
 
 let activeBrowsers = 0;
 const MAX_CONCURRENT_BROWSERS = 3;
