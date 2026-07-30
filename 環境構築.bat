@@ -17,11 +17,12 @@ endlocal & exit /b %SETUP_EXIT%
 :SIT_POWERSHELL
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.Security
 
 $root = [IO.Path]::GetFullPath((Get-Location).Path)
 $appsRoot = [IO.Path]::GetFullPath((Join-Path $root 'apps'))
 $nodeVersion = '24.18.0'
-$chromeVersion = '147.0.7727.56'
+$chromeVersion = '151.0.7922.47'
 $nodeArchiveName = "node-v$nodeVersion-win-x64.zip"
 $nodeUrl = "https://nodejs.org/download/release/v$nodeVersion/$nodeArchiveName"
 $nodeChecksumsUrl = "https://nodejs.org/download/release/v$nodeVersion/SHASUMS256.txt"
@@ -29,6 +30,56 @@ $chromeMetadataUrl = "https://googlechromelabs.github.io/chrome-for-testing/$chr
 $nodeDestination = [IO.Path]::GetFullPath((Join-Path $appsRoot 'node'))
 $chromeDestination = [IO.Path]::GetFullPath((Join-Path $appsRoot 'chrome'))
 $stageRoot = [IO.Path]::GetFullPath((Join-Path $appsRoot ('.setup-' + [guid]::NewGuid().ToString('N'))))
+$serverSecretCreated = $false
+if ([string]::IsNullOrWhiteSpace($env:SIT_SERVER_SECRET)) {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        throw 'LocalAppData was not found.'
+    }
+    $serverSecretDirectory = Join-Path $env:LOCALAPPDATA 'SIT-Dashboard'
+    $serverSecretPath = Join-Path $serverSecretDirectory 'server-secret.dpapi'
+    $entropyProvider = [Security.Cryptography.SHA256]::Create()
+    $entropy = $entropyProvider.ComputeHash(
+        [Text.Encoding]::UTF8.GetBytes('SIT-Dashboard server secret v1')
+    )
+    $entropyProvider.Dispose()
+    if (-not (Test-Path -LiteralPath $serverSecretPath -PathType Leaf)) {
+        New-Item -ItemType Directory -Path $serverSecretDirectory -Force | Out-Null
+        $serverSecretBytes = New-Object byte[] 32
+        $randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try {
+            $randomGenerator.GetBytes($serverSecretBytes)
+            $protectedSecret = [System.Security.Cryptography.ProtectedData]::Protect(
+                $serverSecretBytes,
+                $entropy,
+                [Security.Cryptography.DataProtectionScope]::CurrentUser
+            )
+            [IO.File]::WriteAllBytes($serverSecretPath, $protectedSecret)
+            $serverSecretCreated = $true
+        } finally {
+            $randomGenerator.Dispose()
+            if ($serverSecretBytes) {
+                [Array]::Clear($serverSecretBytes, 0, $serverSecretBytes.Length)
+            }
+            if ($protectedSecret) {
+                [Array]::Clear($protectedSecret, 0, $protectedSecret.Length)
+            }
+        }
+    }
+    $plainServerSecret = [System.Security.Cryptography.ProtectedData]::Unprotect(
+        [IO.File]::ReadAllBytes($serverSecretPath),
+        $entropy,
+        [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    try {
+        $env:SIT_SERVER_SECRET = -join ($plainServerSecret | ForEach-Object { $_.ToString('x2') })
+    } finally {
+        [Array]::Clear($plainServerSecret, 0, $plainServerSecret.Length)
+        [Array]::Clear($entropy, 0, $entropy.Length)
+    }
+}
+if ($env:SIT_SERVER_SECRET -notmatch '^[a-fA-F0-9]{64}$') {
+    throw 'Server secret verification failed.'
+}
 
 function Assert-InApps([string]$target) {
     $resolved = [IO.Path]::GetFullPath($target)
@@ -120,8 +171,20 @@ try {
         if (-not $chromeDownload -or -not $chromeDownload.url) {
             throw 'Chrome win64 download URL was not found.'
         }
+        $chromeDownloadUri = [Uri]$chromeDownload.url
+        $expectedChromePath = "/chrome-for-testing-public/$chromeVersion/win64/chrome-win64.zip"
+        if (
+            $chromeDownloadUri.Scheme -ne 'https' -or
+            $chromeDownloadUri.Host -ne 'storage.googleapis.com' -or
+            $chromeDownloadUri.AbsolutePath -ne $expectedChromePath -or
+            $chromeDownloadUri.Query -or
+            $chromeDownloadUri.Fragment -or
+            $chromeDownloadUri.UserInfo
+        ) {
+            throw 'Chrome download URL is not an approved Google storage URL.'
+        }
         $chromeArchive = Join-Path $stageRoot 'chrome-win64.zip'
-        Invoke-WebRequest -UseBasicParsing -Uri $chromeDownload.url -OutFile $chromeArchive
+        Invoke-WebRequest -UseBasicParsing -Uri $chromeDownloadUri.AbsoluteUri -OutFile $chromeArchive
         $chromeExtract = Join-Path $stageRoot 'chrome-extract'
         Expand-Archive -LiteralPath $chromeArchive -DestinationPath $chromeExtract
         $chromeSource = Join-Path $chromeExtract 'chrome-win64'
@@ -140,6 +203,11 @@ try {
     $portableNode = Join-Path $nodeDestination 'node.exe'
     $portableNpm = Join-Path $nodeDestination 'npm.cmd'
     $env:PUPPETEER_SKIP_DOWNLOAD = 'true'
+    Write-Host 'Running npm install...'
+    & $portableNpm install --omit=dev --ignore-scripts --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+        throw 'npm install failed.'
+    }
     $dependencyCheck = @'
 require('express');
 require('puppeteer');
@@ -147,17 +215,82 @@ require('sql.js');
 '@
     $dependencyCheck | & $portableNode -
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'Downloading project dependencies...'
-        & $portableNpm ci --omit=dev
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Project dependency download failed.'
-        }
-        $dependencyCheck | & $portableNode -
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Project dependency verification failed.'
+        throw 'Project dependency verification failed.'
+    }
+    $adminConfigPath = Join-Path $root 'config\admin-public-key.bin'
+    if (-not (Test-Path -LiteralPath $adminConfigPath -PathType Leaf)) {
+        Write-Host 'Administrator public configuration is not initialized.'
+        $firstSecureKey = Read-Host 'Administrator decryption key' -AsSecureString
+        $secondSecureKey = Read-Host 'Enter the administrator decryption key again' -AsSecureString
+        try {
+            $firstCredential = [Net.NetworkCredential]::new('', $firstSecureKey)
+            $secondCredential = [Net.NetworkCredential]::new('', $secondSecureKey)
+            if ($firstCredential.Password.Length -lt 12 -or $firstCredential.Password -cne $secondCredential.Password) {
+                throw 'Administrator key confirmation failed.'
+            }
+            $env:SIT_ADMIN_DECRYPTION_KEY = $firstCredential.Password
+            try {
+                $adminConfigInitializer = @'
+const path = require('path');
+const {
+    ADMIN_KEY_ENV,
+    writeAdminPublicConfig
+} = require('./logic/dual-key-cache-store');
+writeAdminPublicConfig(
+    path.join(process.cwd(), 'config', 'admin-public-key.bin'),
+    process.env[ADMIN_KEY_ENV]
+);
+'@
+                $adminConfigInitializer | & $portableNode -
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'Administrator public configuration initialization failed.'
+                }
+                Write-Host 'Administrator public configuration was created.'
+            } finally {
+                Remove-Item Env:SIT_ADMIN_DECRYPTION_KEY -ErrorAction SilentlyContinue
+            }
+        } finally {
+            $firstCredential = $null
+            $secondCredential = $null
+            $firstSecureKey.Dispose()
+            $secondSecureKey.Dispose()
         }
     }
-
+    $databaseFiles = @(
+        Get-ChildItem -LiteralPath (Join-Path $root 'cache') -Filter '*.db' -File -ErrorAction SilentlyContinue
+    )
+    $migrationRequired = $serverSecretCreated -and $databaseFiles.Count -gt 0
+    foreach ($databaseFile in $databaseFiles) {
+        $stream = [IO.File]::Open(
+            $databaseFile.FullName,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        try {
+            if ($stream.ReadByte() -ne 3) {
+                $migrationRequired = $true
+            }
+        } finally {
+            $stream.Dispose()
+        }
+    }
+    if ($migrationRequired) {
+        Write-Host 'Encrypted database migration is required.'
+        $migrationSecureKey = Read-Host 'Administrator decryption key' -AsSecureString
+        try {
+            $migrationCredential = [Net.NetworkCredential]::new('', $migrationSecureKey)
+            $env:SIT_ADMIN_DECRYPTION_KEY = $migrationCredential.Password
+            & $portableNode 'Admin\migrate-encryption.js'
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Encrypted database migration failed.'
+            }
+        } finally {
+            Remove-Item Env:SIT_ADMIN_DECRYPTION_KEY -ErrorAction SilentlyContinue
+            $migrationCredential = $null
+            $migrationSecureKey.Dispose()
+        }
+    }
     $finalNodeVersion = (& $portableNode --version)
     $finalChromeVersion = (Get-Item -LiteralPath (Join-Path $chromeDestination 'chrome.exe')).VersionInfo.ProductVersion
     if ($finalNodeVersion -ne "v$nodeVersion" -or $finalChromeVersion -ne $chromeVersion) {
@@ -166,6 +299,8 @@ require('sql.js');
     Write-Host "Node.js: $finalNodeVersion"
     Write-Host "Chrome: $finalChromeVersion"
 } finally {
+    Remove-Item Env:SIT_ADMIN_DECRYPTION_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:SIT_SERVER_SECRET -ErrorAction SilentlyContinue
     Remove-Item Env:PUPPETEER_SKIP_DOWNLOAD -ErrorAction SilentlyContinue
     Assert-InApps $stageRoot
     if (Test-Path -LiteralPath $stageRoot) {

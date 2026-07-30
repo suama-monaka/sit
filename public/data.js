@@ -2,7 +2,6 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const currentUser = {
     id: '',
-    pw: '',
     cachedAt: '',
     attendance: []
 };
@@ -11,6 +10,7 @@ const fetchJson = async (url, body) => {
     const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
         body: JSON.stringify(body)
     });
 
@@ -20,14 +20,11 @@ const fetchJson = async (url, body) => {
     if (contentType.includes('application/json')) {
         try {
             data = await res.json();
-        } catch (err) {
-            const text = await res.text();
-            throw new Error(`サーバーのレスポンスがJSONとして解析できませんでした: ${text.slice(0,200)}`);
+        } catch {
+            throw new Error('サーバーの応答を解析できませんでした');
         }
     } else {
-        const text = await res.text();
-        const snippet = text.trim().slice(0,200);
-        throw new Error(`予期しないレスポンスが返されました（JSONではありません）。ブラウザ拡張（広告ブロッカー等）やCSP、プロキシによるブロックが疑われます。レスポンス先頭: ${snippet}`);
+        throw new Error(`サーバーから予期しない応答が返されました（HTTP ${res.status}）`);
     }
 
     if (!res.ok) {
@@ -40,19 +37,16 @@ const fetchJson = async (url, body) => {
 export const login = async (id, pw) => {
     const body = await fetchJson('./api/login', { id, pw });
     currentUser.id = id;
-    currentUser.pw = pw;
     currentUser.cachedAt = body.cachedAt || '';
     currentUser.attendance = Array.isArray(body.data?.attendance) ? body.data.attendance : [];
     return body;
 };
 
 export const refreshData = async ({ force = false, wait = false } = {}) => {
-    if (!currentUser.id || !currentUser.pw) {
+    if (!currentUser.id) {
         throw new Error('ログイン情報が不足しています');
     }
     const body = await fetchJson('./api/refresh', {
-        id: currentUser.id,
-        pw: currentUser.pw,
         cachedAt: currentUser.cachedAt,
         force,
         wait
@@ -76,15 +70,11 @@ export const pollRefreshUntilUpdated = async (attempt = 0) => {
 };
 
 export const fetchAttendanceForClass = async (classInfo) => {
-    if (!currentUser.id || !currentUser.pw) {
+    if (!currentUser.id) {
         throw new Error('ログインが必要です');
     }
 
-    const body = await fetchJson('./api/attendance', {
-        id: currentUser.id,
-        pw: currentUser.pw,
-        classInfo
-    });
+    const body = await fetchJson('./api/attendance', { classInfo });
 
     if (body.attendance && Array.isArray(body.attendance.attendance)) {
         currentUser.attendance = body.attendance.attendance;

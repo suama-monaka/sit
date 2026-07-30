@@ -52,7 +52,7 @@ const handleScheduleClick = (info) => {
 
 const doLogin = async () => {
     const id = usernameInput?.value.trim();
-    const pw = passwordInput?.value.trim();
+    const pw = passwordInput?.value;
     if (!id || !pw) {
         return alert('学籍番号とパスワードを入力してください');
     }
@@ -68,12 +68,15 @@ const doLogin = async () => {
         renderPageData(body.data, body.cached ? 'キャッシュ' : '最新');
         setCacheInfo(body.cachedAt, body.cached ? 'キャッシュ' : '最新');
 
-        if (body.cached) {
+        if (passwordInput) passwordInput.value = '';
+        if (body.cached && body.updating) {
             setStatus('キャッシュデータを表示しました。最新情報を取得中です...');
             const latest = await pollRefreshUntilUpdated();
             renderPageData(latest.data, '最新');
             setCacheInfo(latest.cachedAt, '最新');
             setStatus('最新データに更新されました。');
+        } else if (body.cached) {
+            setStatus('キャッシュデータを表示しました。');
         } else {
             setStatus('最新データを取得しました。');
         }
@@ -83,12 +86,13 @@ const doLogin = async () => {
         showLoginView();
         setStatus('同期に失敗しました', true);
     } finally {
+        if (passwordInput) passwordInput.value = '';
         setLoadingState(false);
     }
 };
 
 const doRefresh = async ({ force = false } = {}) => {
-    if (!currentUser.id || !currentUser.pw) return;
+    if (!currentUser.id) return;
     setLoadingState(true);
     setStatus(force ? '強制更新中です...' : '最新データを取得中です...');
 

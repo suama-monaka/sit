@@ -18,6 +18,24 @@ const escapeHtml = (text) => {
         .replace(/'/g, '&#39;');
 };
 
+const safeExternalUrl = (value) => {
+    try {
+        const url = new URL(String(value || ''));
+        if (
+            url.protocol !== 'https:' ||
+            url.hostname !== 'moodle2026.shonan-it.ac.jp' ||
+            url.port ||
+            url.username ||
+            url.password
+        ) {
+            return null;
+        }
+        return url.href;
+    } catch {
+        return null;
+    }
+};
+
 const getDayLabel = (day) => {
     const labels = ['日', '月', '火', '水', '木', '金', '土'];
     return labels[day] || '不明';
@@ -74,9 +92,9 @@ export const renderSchedule = (data) => {
 export const renderList = (id, list) => {
     const html = list && list.length ? list.map(item => {
         const title = typeof item === 'string' ? item : item.name || item.title;
-        const url = item.url || null;
+        const url = safeExternalUrl(item.url);
         return url
-            ? `<a class="card course-card course-card-link" href="${escapeHtml(url)}" target="_blank">${escapeHtml(title)}</a>`
+            ? `<a class="card course-card course-card-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`
             : `<div class="card course-card">${escapeHtml(title)}</div>`;
     }).join('') : 'データなし';
     document.getElementById(id).innerHTML = html;
@@ -99,7 +117,7 @@ export const renderAssignments = (id, tasks) => {
                             <div class="timeline-event-meta">${escapeHtml(task.course || task.detail || '')}</div>
                         </div>
                         <div class="timeline-event-action">
-                            ${task.url ? `<a class="timeline-button" href="${escapeHtml(task.url)}" target="_blank">閲覧</a>` : ''}
+                            ${safeExternalUrl(task.url) ? `<a class="timeline-button" href="${escapeHtml(safeExternalUrl(task.url))}" target="_blank" rel="noopener noreferrer">閲覧</a>` : ''}
                         </div>
                     </div>
                 `).join('')}

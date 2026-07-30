@@ -1,4 +1,18 @@
-const url = require('url');
+const PORTAL_HOST = 'portal.shonan-it.ac.jp';
+
+const resolvePortalUrl = (value, baseUrl) => {
+    const resolved = new URL(String(value || ''), baseUrl);
+    if (
+        resolved.protocol !== 'https:' ||
+        resolved.hostname !== PORTAL_HOST ||
+        resolved.port ||
+        resolved.username ||
+        resolved.password
+    ) {
+        throw new Error('Portal navigation target was rejected');
+    }
+    return resolved.href;
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -49,7 +63,7 @@ async function fetchAttendance(browser, id, pw, classInfo) {
             for (let attempt = 0; attempt < 10; attempt++) {
                 const href = await getNavigationHref(pattern);
                 if (href) {
-                    const resolved = href.startsWith('http') ? href : new URL(href, page.url()).toString();
+                    const resolved = resolvePortalUrl(href, page.url());
                     await page.goto(resolved, { waitUntil: 'networkidle2', timeout: 30000 });
                     return;
                 }
@@ -73,6 +87,7 @@ async function fetchAttendance(browser, id, pw, classInfo) {
                         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => null),
                         sleep(2000)
                     ]);
+                    resolvePortalUrl(page.url(), page.url());
                     return;
                 }
 
@@ -96,11 +111,9 @@ async function fetchAttendance(browser, id, pw, classInfo) {
                 .toLowerCase();
 
             const table = document.querySelector('.sp-table-scroll');
-            const rawText = (document.body.innerText || '').trim();
             if (!table) {
                 return {
-                    attendanceHtml: null,
-                    rawText,
+                    tableFound: false,
                     attendance: [],
                     summary: {
                         matchedTitle: '出欠情報',
@@ -111,8 +124,6 @@ async function fetchAttendance(browser, id, pw, classInfo) {
                     }
                 };
             }
-
-            const attendanceHtml = table.outerHTML;
 
             const headers = [];
             const headerRows = Array.from(table.querySelectorAll('thead tr'));
@@ -226,14 +237,13 @@ async function fetchAttendance(browser, id, pw, classInfo) {
             });
 
             return {
-                attendanceHtml,
-                rawText,
+                tableFound: true,
                 attendance: [{ headers, rows: targetRows }],
                 summary
             };
         }, classInfo);
 
-        if (!attendanceResult.attendanceHtml) {
+        if (!attendanceResult.tableFound) {
             throw new Error('出欠情報のテーブルが見つかりませんでした。');
         }
 

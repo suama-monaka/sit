@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SIT Dash</title>
+    <link rel="icon" href="ham.svg" type="image/svg+xml">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,7 +19,7 @@
                     <label class="sr-only" for="username_input">学籍番号</label>
                     <input type="text" id="username_input" name="username" autocomplete="off" spellcheck="false" placeholder="学籍番号">
                     <label class="sr-only" for="password_input">パスワード</label>
-                    <input type="password" id="password_input" name="password" autocomplete="new-password" placeholder="パスワード">
+                    <input type="password" id="password_input" name="password" autocomplete="off" placeholder="パスワード">
                     <button id="sync-btn" type="button" class="action-button">同期を開始</button>
                 </div>
             </div>
@@ -47,10 +48,10 @@
                     <button id="drawer-close" class="drawer-close" type="button" aria-label="閉じる">×</button>
                 </div>
                 <div class="drawer-body">
-                    <a class="drawer-link" href="https://moodle2026.shonan-it.ac.jp/" target="_blank" rel="noopener">Moodle 2026</a>
-                    <a class="drawer-link" href="https://portal.shonan-it.ac.jp/campusweb/" target="_blank" rel="noopener">Campus Square</a>
-                    <a class="drawer-link" href="https://syllabus.shonan-it.ac.jp/" target="_blank" rel="noopener">シラバス</a>
-                    <a class="drawer-link" href="https://syusseki.shonan-it.ac.jp/campusaa/" target="_blank" rel="noopener">Campus Square出席サイト</a>
+                    <a class="drawer-link" href="https://moodle2026.shonan-it.ac.jp/" target="_blank" rel="noopener noreferrer">Moodle 2026</a>
+                    <a class="drawer-link" href="https://portal.shonan-it.ac.jp/campusweb/" target="_blank" rel="noopener noreferrer">Campus Square</a>
+                    <a class="drawer-link" href="https://syllabus.shonan-it.ac.jp/" target="_blank" rel="noopener noreferrer">シラバス</a>
+                    <a class="drawer-link" href="https://syusseki.shonan-it.ac.jp/campusaa/" target="_blank" rel="noopener noreferrer">Campus Square出席サイト</a>
                 </div>
             </aside>
 
@@ -93,7 +94,7 @@
             </div>
         </section>
     </main>
-    <div id="app-version" class="app-version">v0.3.4</div>
+    <div id="app-version" class="app-version">v2.3.0</div>
     <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -2,9 +2,11 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const {
     CacheIntegrityError,
     InvalidCredentialsError,
+    SERVER_SECRET_ENV,
     createDualKeyCacheStore
 } = require('./logic/dual-key-cache-store');
 
@@ -15,291 +17,570 @@ const fetchAssignments = require('./logic/assignments');
 const fetchAttendance = require('./logic/attendance');
 
 const app = express();
-const PORT = 10000;
-
-let activeBrowsers = 0;
+const PORT = 4007;
+const HOST = '0.0.0.0';
 const MAX_CONCURRENT_BROWSERS = 3;
-
+const MAX_QUEUED_BROWSER_JOBS = 12;
+const SESSION_TTL_MS = 30 * 60 * 1000;
+const MAX_SESSIONS = 1000;
+const MAX_SESSIONS_PER_USER = 5;
+const MAX_RATE_LIMIT_BUCKETS = 10000;
+const BROWSER_QUEUE_TIMEOUT_MS = 2 * 60 * 1000;
+const BROWSER_JOB_TIMEOUT_MS = 3 * 60 * 1000;
+const DISABLE_BACKGROUND_REFRESH = process.env.SIT_DISABLE_BACKGROUND_REFRESH === '1';
+const PUBLIC_ORIGIN = (() => {
+    const configured = String(
+        process.env.SIT_PUBLIC_ORIGIN || 'https://sit.racal.f5.si'
+    ).trim();
+    const url = new URL(configured);
+    if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        url.pathname !== '/' ||
+        url.search ||
+        url.hash
+    ) {
+        throw new Error('SIT_PUBLIC_ORIGIN must be an HTTPS origin without a path');
+    }
+    return url.origin;
+})();
+const PUBLIC_HOST = new URL(PUBLIC_ORIGIN).host.toLowerCase();
 const CACHE_ROOT = path.join(__dirname, 'cache');
+const SERVER_SECRET_STDIN_ENV = 'SIT_SERVER_SECRET_STDIN';
+let serverSecret = process.env[SERVER_SECRET_ENV];
+if (!serverSecret && process.env[SERVER_SECRET_STDIN_ENV] === '1') {
+    serverSecret = fs.readFileSync(0, 'utf8').trim();
+}
 const cacheStore = createDualKeyCacheStore({
     cacheRoot: CACHE_ROOT,
-    adminPublicConfigPath: path.join(__dirname, 'config', 'admin-public-key.bin')
+    adminPublicConfigPath: path.join(__dirname, 'config', 'admin-public-key.bin'),
+    serverSecret
 });
+serverSecret = undefined;
+delete process.env[SERVER_SECRET_ENV];
+delete process.env[SERVER_SECRET_STDIN_ENV];
 
-const userCache = {};
+const userCache = new Map();
+const sessions = new Map();
+const browserQueue = [];
+let activeBrowsers = 0;
 
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+class ServiceBusyError extends Error {}
+
+const firstForwardedValue = (value) => (
+    String(value || '').split(',')[0].trim().toLowerCase()
+);
+
+const requestHosts = (req) => {
+    const hosts = new Set();
+    const directHost = firstForwardedValue(req.get('host'));
+    const forwardedHost = firstForwardedValue(req.get('x-forwarded-host'));
+    if (directHost) hosts.add(directHost);
+    if (forwardedHost) hosts.add(forwardedHost);
+    return hosts;
+};
+
+const isHttpsRequest = (req) => {
+    if (req.secure) return true;
+    if (firstForwardedValue(req.get('x-forwarded-proto')) === 'https') return true;
+    if (String(req.get('origin') || '').toLowerCase() === PUBLIC_ORIGIN.toLowerCase()) {
+        return true;
+    }
+    return requestHosts(req).has(PUBLIC_HOST);
+};
+
+app.disable('x-powered-by');
+app.set('trust proxy', 'loopback');
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(204);
+    res.set({
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Resource-Policy': 'same-origin',
+        'Origin-Agent-Cluster': '?1',
+        'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+        'Pragma': 'no-cache',
+        'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+        'X-DNS-Prefetch-Control': 'off',
+        'X-Download-Options': 'noopen',
+        'X-Frame-Options': 'DENY',
+        'X-Permitted-Cross-Domain-Policies': 'none'
+    });
+    if (isHttpsRequest(req)) {
+        res.setHeader(
+            'Strict-Transport-Security',
+            'max-age=31536000; includeSubDomains'
+        );
     }
     next();
 });
-
+app.use('/api', (req, res, next) => {
+    const origin = String(req.get('origin') || '').toLowerCase();
+    const allowedOrigins = new Set([PUBLIC_ORIGIN.toLowerCase()]);
+    for (const host of requestHosts(req)) {
+        allowedOrigins.add(`http://${host}`);
+        allowedOrigins.add(`https://${host}`);
+    }
+    const fetchSite = String(req.get('sec-fetch-site') || '').toLowerCase();
+    if ((origin && !allowedOrigins.has(origin)) || fetchSite === 'cross-site') {
+        return res.status(403).json({ error: '許可されていないアクセスです' });
+    }
+    const requestedWith = String(req.get('x-requested-with') || '').toLowerCase();
+    if (req.method !== 'GET' && requestedWith !== 'xmlhttprequest') {
+        return res.status(403).json({ error: '許可されていないアクセスです' });
+    }
+    if (!['GET', 'HEAD'].includes(req.method) && !req.is('application/json')) {
+        return res.status(415).json({ error: 'JSON形式のリクエストが必要です' });
+    }
+    next();
+});
 const normalizeId = (id) => String(id || '').trim().toUpperCase();
-const hashPassword = (pw) => crypto.createHash('sha256').update(String(pw)).digest('hex');
-
-const escapeHtml = (text) => {
-    return String(text || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+const isValidId = (id) => /^[A-Z0-9_-]{1,64}$/.test(id);
+const isValidPassword = (password) => typeof password === 'string' && password.length >= 1 && password.length <= 256;
+const hashPassword = (password) => crypto.createHash('sha256').update(password).digest('hex');
+const passwordHashesEqual = (left, right) => {
+    const leftBytes = Buffer.from(String(left || ''), 'hex');
+    const rightBytes = Buffer.from(String(right || ''), 'hex');
+    return leftBytes.length === 32 &&
+        rightBytes.length === 32 &&
+        crypto.timingSafeEqual(leftBytes, rightBytes);
 };
 
-const loadCacheFromFile = async (normalizedId, pw) => {
-    return cacheStore.loadWithUserCredentials(normalizedId, pw);
+const normalizeClassInfo = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const result = {};
+    for (const key of ['code', 'name', 'teacher']) {
+        if (value[key] !== undefined) {
+            if (typeof value[key] !== 'string' || value[key].length > 256) return null;
+            result[key] = value[key];
+        }
+    }
+    for (const key of ['day', 'period']) {
+        if (value[key] !== undefined) {
+            const number = Number(value[key]);
+            if (!Number.isInteger(number) || number < 1 || number > 7) return null;
+            result[key] = number;
+        }
+    }
+    return result;
 };
 
-const saveCacheToFile = async (normalizedId, cacheEntry) => {
-    return cacheStore.saveWithUserCredentials(normalizedId, cacheEntry.pw, cacheEntry);
+const parseCookies = (header) => {
+    const result = {};
+    for (const item of String(header || '').split(';')) {
+        const separator = item.indexOf('=');
+        if (separator < 1) continue;
+        const key = item.slice(0, separator).trim();
+        const value = item.slice(separator + 1).trim();
+        try {
+            result[key] = decodeURIComponent(value);
+        } catch {
+            result[key] = '';
+        }
+    }
+    return result;
 };
 
-const loadCacheEntry = async (normalizedId, pw) => {
-    const suppliedHash = hashPassword(pw);
-    let cacheEntry = userCache[normalizedId];
-    if (cacheEntry) {
-        if (cacheEntry.pwHash !== suppliedHash) {
+const setSessionCookie = (req, res, token) => {
+    res.setHeader(
+        'Set-Cookie',
+        `sit_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Priority=High${isHttpsRequest(req) ? '; Secure' : ''}`
+    );
+};
+
+const clearSessionCookie = (req, res) => {
+    res.setHeader(
+        'Set-Cookie',
+        `sit_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Priority=High${isHttpsRequest(req) ? '; Secure' : ''}`
+    );
+};
+
+const hasSessionForUser = (id) => {
+    for (const session of sessions.values()) {
+        if (session.id === id && session.expiresAt > Date.now()) return true;
+    }
+    return false;
+};
+
+const releaseUserIfUnused = (id) => {
+    if (hasSessionForUser(id)) return;
+    const entry = userCache.get(id);
+    if (!entry || entry.refreshing) return;
+    entry.password = '';
+    userCache.delete(id);
+};
+
+const destroySession = (token) => {
+    const session = sessions.get(token);
+    if (!session) return false;
+    sessions.delete(token);
+    releaseUserIfUnused(session.id);
+    return true;
+};
+
+const enforceSessionLimits = (id) => {
+    const userSessions = [];
+    for (const [token, session] of sessions) {
+        if (session.id === id) userSessions.push([token, session]);
+    }
+    userSessions.sort((left, right) => left[1].createdAt - right[1].createdAt);
+    while (userSessions.length > MAX_SESSIONS_PER_USER) {
+        const [token] = userSessions.shift();
+        destroySession(token);
+    }
+    while (sessions.size > MAX_SESSIONS) {
+        const oldestToken = sessions.keys().next().value;
+        if (!oldestToken) break;
+        destroySession(oldestToken);
+    }
+};
+
+const createSession = (req, res, id) => {
+    const oldToken = parseCookies(req.headers.cookie).sit_session;
+    if (oldToken) sessions.delete(oldToken);
+    const token = crypto.randomBytes(32).toString('base64url');
+    sessions.set(token, {
+        id,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + SESSION_TTL_MS
+    });
+    enforceSessionLimits(id);
+    setSessionCookie(req, res, token);
+};
+
+const requireSession = (req, res, next) => {
+    const token = parseCookies(req.headers.cookie).sit_session;
+    const session = token ? sessions.get(token) : null;
+    const entry = session ? userCache.get(session.id) : null;
+    if (!session || session.expiresAt <= Date.now() || !entry) {
+        if (token) destroySession(token);
+        clearSessionCookie(req, res);
+        return res.status(401).json({ error: 'ログインが必要です' });
+    }
+    session.expiresAt = Date.now() + SESSION_TTL_MS;
+    req.sessionToken = token;
+    req.auth = { id: session.id, password: entry.password };
+    next();
+};
+
+const createRateLimiter = (
+    windowMs,
+    maximum,
+    prefix,
+    keySelector = (req) => req.ip
+) => {
+    const buckets = new Map();
+    let requestCount = 0;
+    return (req, res, next) => {
+        const now = Date.now();
+        requestCount += 1;
+        if (requestCount % 256 === 0) {
+            for (const [bucketKey, bucketValue] of buckets) {
+                if (bucketValue.resetAt <= now) buckets.delete(bucketKey);
+            }
+        }
+        const key = `${prefix}:${keySelector(req)}`;
+        const bucket = buckets.get(key);
+        if (!bucket || bucket.resetAt <= now) {
+            if (buckets.size >= MAX_RATE_LIMIT_BUCKETS) {
+                return res.status(429).json({ error: '試行回数が多すぎます。しばらく待ってください' });
+            }
+            buckets.set(key, { count: 1, resetAt: now + windowMs });
+            return next();
+        }
+        bucket.count += 1;
+        if (bucket.count > maximum) {
+            res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+            return res.status(429).json({ error: '試行回数が多すぎます。しばらく待ってください' });
+        }
+        next();
+    };
+};
+
+const apiLimiter = createRateLimiter(60 * 1000, 120, 'api');
+const loginLimiter = createRateLimiter(
+    5 * 60 * 1000,
+    10,
+    'login',
+    (req) => `${req.ip}:${normalizeId(req.body && req.body.id)}`
+);
+app.use('/api', apiLimiter);
+app.use('/api', express.json({
+    inflate: false,
+    limit: '32kb',
+    strict: true,
+    type: 'application/json'
+}));
+
+app.use(express.static(path.join(__dirname, 'public'), {
+    dotfiles: 'deny',
+    etag: false,
+    extensions: false,
+    fallthrough: true,
+    index: 'index.html',
+    lastModified: false,
+    maxAge: 0,
+    redirect: false
+}));
+
+const acquireBrowserSlot = () => {
+    if (activeBrowsers < MAX_CONCURRENT_BROWSERS) {
+        activeBrowsers += 1;
+        return Promise.resolve();
+    }
+    if (browserQueue.length >= MAX_QUEUED_BROWSER_JOBS) {
+        return Promise.reject(new ServiceBusyError());
+    }
+    return new Promise((resolve, reject) => {
+        const queued = { resolve, reject, timer: null };
+        queued.timer = setTimeout(() => {
+            const index = browserQueue.indexOf(queued);
+            if (index >= 0) browserQueue.splice(index, 1);
+            reject(new ServiceBusyError());
+        }, BROWSER_QUEUE_TIMEOUT_MS);
+        queued.timer.unref();
+        browserQueue.push(queued);
+    });
+};
+
+const releaseBrowserSlot = () => {
+    const next = browserQueue.shift();
+    if (next) {
+        clearTimeout(next.timer);
+        next.resolve();
+        return;
+    }
+    activeBrowsers = Math.max(0, activeBrowsers - 1);
+};
+
+const withBrowser = async (task) => {
+    await acquireBrowserSlot();
+    let browser;
+    let timeout;
+    try {
+        browser = await puppeteer.launch({
+            headless: true
+        });
+        return await Promise.race([
+            task(browser),
+            new Promise((resolve, reject) => {
+                timeout = setTimeout(
+                    () => reject(new ServiceBusyError()),
+                    BROWSER_JOB_TIMEOUT_MS
+                );
+                timeout.unref();
+            })
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
+        if (browser) {
+            try {
+                await browser.close();
+            } catch (error) {
+                console.error('[Browser Close Error]:', error.message || error);
+            }
+        }
+        releaseBrowserSlot();
+    }
+};
+
+const loadCacheFromFile = async (id, password) => cacheStore.loadWithUserCredentials(id, password);
+const saveCacheToFile = async (id, entry) => cacheStore.saveWithUserCredentials(id, entry.password, entry);
+
+const loadCacheEntry = async (id, password) => {
+    const suppliedHash = hashPassword(password);
+    const inMemory = userCache.get(id);
+    if (inMemory) {
+        if (!passwordHashesEqual(inMemory.pwHash, suppliedHash)) {
             throw new InvalidCredentialsError();
         }
-        return cacheEntry;
+        return inMemory;
     }
-
-    const fileCache = await loadCacheFromFile(normalizedId, pw);
-    if (!fileCache) return null;
-    cacheEntry = {
-        ...fileCache,
-        pw,
-        attendance: Array.isArray(fileCache.attendance) ? fileCache.attendance : [],
+    const stored = await loadCacheFromFile(id, password);
+    if (!stored) return null;
+    const entry = {
+        ...stored,
+        password,
+        attendance: Array.isArray(stored.attendance) ? stored.attendance : [],
         refreshing: false,
         refreshPromise: null
     };
-    userCache[normalizedId] = cacheEntry;
-    return cacheEntry;
+    userCache.set(id, entry);
+    return entry;
 };
 
-
-const launchBrowser = async () => {
-    activeBrowsers++;
-    console.log(`🔄 [System] Launching browser (#${activeBrowsers})...`);
-    const browser = await puppeteer.launch({ 
-        headless: false, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-    });
-    console.log('✅ [System] Browser window launched');
-    return browser;
-};
-
-
-const closeBrowser = async (browser) => {
-    try {
-        if (browser) {
-            await browser.close();
-            console.log('✅ [System] Browser window closed');
-        }
-    } catch (e) {
-        console.log('❌ [System] Browser close error:', e.message);
-    } finally {
-        activeBrowsers--;
-    }
-};
-
-const loadNewData = async (id, pw) => {
-    const [campusBrowser, moodleBrowser, assignmentsBrowser, attendanceBrowser] = await Promise.all([
-        launchBrowser(),
-        launchBrowser(),
-        launchBrowser(),
-        launchBrowser()
-    ]);
-
-    try {
-        const campusPromise = fetchCampusFile(campusBrowser, id.toUpperCase(), pw).then(csvPath => parseSchedule(csvPath));
-        const moodlePromise = fetchMoodle(moodleBrowser, id, pw);
-        const assignmentPromise = fetchAssignments(assignmentsBrowser, id, pw);
-        const attendancePromise = fetchAttendance(attendanceBrowser, id, pw);
-
-        const [campusResult, moodleResult, assignmentResult, attendanceResult] = await Promise.allSettled([
-            campusPromise,
-            moodlePromise,
-            assignmentPromise,
-            attendancePromise
-        ]);
-
-        let campusData = [];
-        let courses = [];
-        let tasks = [];
-        let attendance = [];
-        let campusError = null;
-        let moodleError = null;
-        let assignmentError = null;
-        let attendanceError = null;
-
-        if (campusResult.status === 'fulfilled') {
-            campusData = campusResult.value;
-        } else {
-            campusError = campusResult.reason;
-            console.error('❌ [Load Campus Error]:', campusError.message || campusError);
-        }
-
-        if (moodleResult.status === 'fulfilled') {
-            courses = moodleResult.value;
-        } else {
-            moodleError = moodleResult.reason;
-            console.error('❌ [Load Moodle Error]:', moodleError.message || moodleError);
-        }
-
-        if (assignmentResult.status === 'fulfilled') {
-            tasks = assignmentResult.value;
-        } else {
-            assignmentError = assignmentResult.reason;
-            console.error('❌ [Load Assignments Error]:', assignmentError.message || assignmentError);
-        }
-
-        if (attendanceResult.status === 'fulfilled') {
-            attendance = attendanceResult.value.attendance || [];
-        } else {
-            attendanceError = attendanceResult.reason;
-            console.error('❌ [Load Attendance Error]:', attendanceError.message || attendanceError);
-        }
-
-        return { campusData, courses, tasks, attendance, campusError, moodleError, assignmentError, attendanceError };
-    } finally {
-        await closeBrowser(campusBrowser);
-        await closeBrowser(moodleBrowser);
-        await closeBrowser(assignmentsBrowser);
-        await closeBrowser(attendanceBrowser);
-    }
-};
-
-const updateCacheWithPartialResult = async (normalizedId, cacheEntry, result) => {
-    let updated = false;
-
-    if (result.campusError === null) {
-        cacheEntry.campus = result.campusData;
-        updated = true;
-    }
-    if (result.moodleError === null) {
-        cacheEntry.courses = result.courses;
-        updated = true;
-    }
-    if (result.assignmentError === null) {
-        cacheEntry.tasks = result.tasks;
-        updated = true;
-    }
-    if (result.attendanceError === null) {
-        cacheEntry.attendance = result.attendance;
-        updated = true;
-    }
-
-    cacheEntry.lastErrors = {
-        campus: result.campusError ? String(result.campusError.message || result.campusError) : null,
-        moodle: result.moodleError ? String(result.moodleError.message || result.moodleError) : null,
-        assignments: result.assignmentError ? String(result.assignmentError.message || result.assignmentError) : null,
-        attendance: result.attendanceError ? String(result.attendanceError.message || result.attendanceError) : null
+const loadNewData = async (id, password) => {
+    const operations = [
+        withBrowser(async (browser) => parseSchedule(await fetchCampusFile(browser, id, password))),
+        withBrowser((browser) => fetchMoodle(browser, id, password)),
+        withBrowser((browser) => fetchAssignments(browser, id, password)),
+        withBrowser((browser) => fetchAttendance(browser, id, password))
+    ];
+    const [campusResult, moodleResult, assignmentResult, attendanceResult] = await Promise.allSettled(operations);
+    const result = {
+        campusData: [],
+        courses: [],
+        tasks: [],
+        attendance: [],
+        campusError: null,
+        moodleError: null,
+        assignmentError: null,
+        attendanceError: null
     };
+    if (campusResult.status === 'fulfilled') result.campusData = campusResult.value;
+    else result.campusError = campusResult.reason;
+    if (moodleResult.status === 'fulfilled') result.courses = moodleResult.value;
+    else result.moodleError = moodleResult.reason;
+    if (assignmentResult.status === 'fulfilled') result.tasks = assignmentResult.value;
+    else result.assignmentError = assignmentResult.reason;
+    if (attendanceResult.status === 'fulfilled') result.attendance = attendanceResult.value.attendance || [];
+    else result.attendanceError = attendanceResult.reason;
+    for (const [name, error] of [
+        ['Campus', result.campusError],
+        ['Moodle', result.moodleError],
+        ['Assignments', result.assignmentError],
+        ['Attendance', result.attendanceError]
+    ]) {
+        if (error) console.error(`[Load ${name} Error]:`, error.message || error);
+    }
+    return result;
+};
 
+const safeMoodleUrl = (value) => {
+    try {
+        const url = new URL(String(value || ''));
+        if (
+            url.protocol !== 'https:' ||
+            url.hostname !== 'moodle2026.shonan-it.ac.jp' ||
+            url.port ||
+            url.username ||
+            url.password
+        ) {
+            return null;
+        }
+        return url.href;
+    } catch {
+        return null;
+    }
+};
+
+const publicData = (entry) => ({
+    campus: entry.campus,
+    schedule: entry.campus,
+    courses: Array.isArray(entry.courses)
+        ? entry.courses.map((course) => (
+            typeof course === 'string'
+                ? course
+                : { ...course, url: safeMoodleUrl(course && course.url) }
+        ))
+        : [],
+    tasks: Array.isArray(entry.tasks)
+        ? entry.tasks.map((group) => ({
+            ...group,
+            tasks: Array.isArray(group && group.tasks)
+                ? group.tasks.map((task) => ({
+                    ...task,
+                    url: safeMoodleUrl(task && task.url)
+                }))
+                : []
+        }))
+        : [],
+    attendance: entry.attendance || []
+});
+
+const updateCacheWithPartialResult = async (id, entry, result) => {
+    let updated = false;
+    if (!result.campusError) {
+        entry.campus = result.campusData;
+        updated = true;
+    }
+    if (!result.moodleError) {
+        entry.courses = result.courses;
+        updated = true;
+    }
+    if (!result.assignmentError) {
+        entry.tasks = result.tasks;
+        updated = true;
+    }
+    if (!result.attendanceError) {
+        entry.attendance = result.attendance;
+        updated = true;
+    }
+    entry.lastErrors = {
+        campus: result.campusError ? '取得に失敗しました' : null,
+        moodle: result.moodleError ? '取得に失敗しました' : null,
+        assignments: result.assignmentError ? '取得に失敗しました' : null,
+        attendance: result.attendanceError ? '取得に失敗しました' : null
+    };
     if (updated) {
-        cacheEntry.cachedAt = new Date().toISOString();
-        await saveCacheToFile(normalizedId, cacheEntry);
+        entry.cachedAt = new Date().toISOString();
+        await saveCacheToFile(id, entry);
     }
     return updated;
 };
 
-const refreshCache = async (key, id, pw) => {
-    const cacheEntry = userCache[key];
-    if (!cacheEntry) {
-        throw new Error('キャッシュエントリが存在しません');
+const refreshCache = async (id, password) => {
+    const entry = userCache.get(id);
+    if (!entry) throw new Error('キャッシュエントリが存在しません');
+    if (entry.refreshing) {
+        return { alreadyRefreshing: true, cachedAt: entry.cachedAt };
     }
-    if (cacheEntry.refreshing) {
-        return { alreadyRefreshing: true, cachedAt: cacheEntry.cachedAt };
-    }
-
-    cacheEntry.refreshing = true;
-    cacheEntry.refreshPromise = (async () => {
+    entry.refreshing = true;
+    entry.refreshPromise = (async () => {
         try {
-            const result = await loadNewData(id, pw);
-            const updated = await updateCacheWithPartialResult(key, cacheEntry, result);
+            const result = await loadNewData(id, password);
+            const updated = await updateCacheWithPartialResult(id, entry, result);
             return {
                 alreadyRefreshing: false,
                 updated,
-                cachedAt: cacheEntry.cachedAt,
-                errors: cacheEntry.lastErrors,
-                data: {
-                    campus: cacheEntry.campus,
-                    schedule: cacheEntry.campus,
-                    courses: cacheEntry.courses,
-                    tasks: cacheEntry.tasks,
-                    attendance: cacheEntry.attendance || []
-                }
+                cachedAt: entry.cachedAt,
+                errors: entry.lastErrors,
+                data: publicData(entry)
             };
         } finally {
-            cacheEntry.refreshing = false;
-            cacheEntry.refreshPromise = null;
+            entry.refreshing = false;
+            entry.refreshPromise = null;
+            releaseUserIfUnused(id);
         }
     })();
-
-    return cacheEntry.refreshPromise;
+    return entry.refreshPromise;
 };
 
-app.post('/api/login', async (req, res) => {
-    const { id, pw } = req.body;
-    if (!id || !pw) return res.status(400).json({ error: '学籍番号とパスワードが必要です' });
-
-    const normalizedId = normalizeId(id);
-    const pwHash = hashPassword(pw);
-    let cachedEntry;
-    try {
-        cachedEntry = await loadCacheEntry(normalizedId, pw);
-    } catch (error) {
-        if (error instanceof InvalidCredentialsError) {
-            return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
-        }
-        console.error('[Encrypted DB Load Error]:', error.message || error);
-        const message = error instanceof CacheIntegrityError
-            ? '暗号化DBの整合性を確認できません'
-            : '暗号化DBを読み込めません';
-        return res.status(500).json({ error: message });
+app.post('/api/login', loginLimiter, async (req, res, next) => {
+    const id = normalizeId(req.body && req.body.id);
+    const password = req.body && req.body.pw;
+    if (!isValidId(id) || !isValidPassword(password)) {
+        return res.status(400).json({ error: '学籍番号またはパスワードの形式が正しくありません' });
     }
-    if (cachedEntry) {
-        if (cachedEntry.pwHash !== pwHash) {
-            return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
-        }
-        const responseBody = {
-            authenticated: true,
-            cached: true,
-            data: {
-                campus: cachedEntry.campus,
-                schedule: cachedEntry.campus,
-                courses: cachedEntry.courses,
-                tasks: cachedEntry.tasks,
-                attendance: cachedEntry.attendance || []
-            },
-            cachedAt: cachedEntry.cachedAt,
-            updating: true
-        };
-
-        res.json(responseBody);
-        refreshCache(normalizedId, id, pw).catch((e) => {
-            console.error('❌ [Background refresh failed]:', e.message || e);
-        });
-        return;
-    }
-
-    console.log('\n🚀 [Login] New ID login:', normalizedId);
     try {
-        const result = await loadNewData(id, pw);
+        const cachedEntry = await loadCacheEntry(id, password);
+        if (cachedEntry) {
+            createSession(req, res, id);
+            const updating = !DISABLE_BACKGROUND_REFRESH;
+            res.json({
+                authenticated: true,
+                cached: true,
+                data: publicData(cachedEntry),
+                cachedAt: cachedEntry.cachedAt,
+                updating
+            });
+            if (updating) {
+                refreshCache(id, password).catch((error) => {
+                    console.error('[Background Refresh Error]:', error.message || error);
+                });
+            }
+            return;
+        }
+
+        const result = await loadNewData(id, password);
         if (result.campusError) {
             return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
         }
-
-        userCache[normalizedId] = {
-            pwHash,
-            pw,
+        const entry = {
+            pwHash: hashPassword(password),
+            password,
             campus: result.campusData,
             courses: result.courses,
             tasks: result.tasks,
@@ -309,252 +590,162 @@ app.post('/api/login', async (req, res) => {
             refreshPromise: null,
             lastErrors: {
                 campus: null,
-                moodle: result.moodleError ? String(result.moodleError.message || result.moodleError) : null,
-                assignments: result.assignmentError ? String(result.assignmentError.message || result.assignmentError) : null,
-                attendance: result.attendanceError ? String(result.attendanceError.message || result.attendanceError) : null
+                moodle: result.moodleError ? '取得に失敗しました' : null,
+                assignments: result.assignmentError ? '取得に失敗しました' : null,
+                attendance: result.attendanceError ? '取得に失敗しました' : null
             },
             attendanceDebug: null
         };
-        await saveCacheToFile(normalizedId, userCache[normalizedId]);
+        userCache.set(id, entry);
+        await saveCacheToFile(id, entry);
+        createSession(req, res, id);
         res.json({
             authenticated: true,
             cached: false,
-            data: {
-                campus: result.campusData,
-                schedule: result.campusData,
-                courses: result.courses,
-                tasks: result.tasks,
-                attendance: userCache[normalizedId].attendance
-            },
-            cachedAt: userCache[normalizedId].cachedAt,
-            errors: userCache[normalizedId].lastErrors
+            data: publicData(entry),
+            cachedAt: entry.cachedAt,
+            errors: entry.lastErrors,
+            updating: false
         });
-    } catch (e) {
-        console.error('❌ [Login Error]:', e.message || e);
-        res.status(500).json({ error: '同期に失敗しました', details: String(e.message || e) });
-    }
-});
-
-app.post('/api/refresh', async (req, res) => {
-    const { id, pw, cachedAt: clientCachedAt, wait, force } = req.body;
-    if (!id || !pw) return res.status(400).json({ error: '学籍番号とパスワードが必要です' });
-
-    const normalizedId = normalizeId(id);
-    const pwHash = hashPassword(pw);
-    let cacheEntry;
-    try {
-        cacheEntry = await loadCacheEntry(normalizedId, pw);
     } catch (error) {
         if (error instanceof InvalidCredentialsError) {
             return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
         }
-        console.error('[Encrypted DB Load Error]:', error.message || error);
-        return res.status(500).json({ error: '暗号化DBを読み込めません' });
+        if (error instanceof CacheIntegrityError) {
+            console.error('[Encrypted DB Integrity Error]:', error.message || error);
+            return res.status(500).json({ error: '暗号化DBが破損しているため読み込めません' });
+        }
+        next(error);
     }
-    if (!cacheEntry) {
-        return res.status(404).json({ error: 'キャッシュが存在しません。再ログインしてください。' });
-    }
-    if (cacheEntry.pwHash !== pwHash) {
-        return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
-    }
+});
 
-    if (clientCachedAt && clientCachedAt !== cacheEntry.cachedAt && !cacheEntry.refreshing && !force) {
-        return res.json({
-            authenticated: true,
-            cached: true,
-            alreadyRefreshing: false,
-            data: {
-                campus: cacheEntry.campus,
-                schedule: cacheEntry.campus,
-                courses: cacheEntry.courses,
-                tasks: cacheEntry.tasks,
-                attendance: cacheEntry.attendance || []
-            },
-            cachedAt: cacheEntry.cachedAt,
-            message: '最新のキャッシュデータがあります。'
-        });
-    }
-
+app.post('/api/refresh', requireSession, async (req, res, next) => {
+    const { id, password } = req.auth;
+    const clientCachedAt = typeof req.body.cachedAt === 'string' &&
+        req.body.cachedAt.length <= 64
+        ? req.body.cachedAt
+        : '';
+    const wait = req.body.wait === true;
+    const force = req.body.force === true;
     try {
-        if (cacheEntry.refreshPromise && wait) {
-            const result = await cacheEntry.refreshPromise;
+        const entry = await loadCacheEntry(id, password);
+        if (!entry) return res.status(404).json({ error: 'キャッシュが存在しません。再ログインしてください' });
+        if (clientCachedAt && clientCachedAt !== entry.cachedAt && !entry.refreshing && !force) {
+            return res.json({
+                authenticated: true,
+                cached: true,
+                alreadyRefreshing: false,
+                data: publicData(entry),
+                cachedAt: entry.cachedAt,
+                message: '最新のキャッシュデータがあります'
+            });
+        }
+        if (entry.refreshPromise && wait) {
+            const result = await entry.refreshPromise;
             return res.json({
                 authenticated: true,
                 cached: false,
                 alreadyRefreshing: false,
-                data: result.data,
-                cachedAt: result.cachedAt,
-                errors: result.errors,
-                updated: result.updated
+                ...result
             });
         }
-
-        const result = await refreshCache(normalizedId, id, pw);
+        const result = await refreshCache(id, password);
         if (result.alreadyRefreshing) {
             return res.json({
                 authenticated: true,
                 cached: true,
                 alreadyRefreshing: true,
-                data: {
-                    campus: cacheEntry.campus,
-                    schedule: cacheEntry.campus,
-                    courses: cacheEntry.courses,
-                    tasks: cacheEntry.tasks,
-                    attendance: cacheEntry.attendance || []
-                },
-                cachedAt: cacheEntry.cachedAt,
-                message: '現在バックグラウンド更新中です。'
+                data: publicData(entry),
+                cachedAt: entry.cachedAt,
+                message: '現在バックグラウンド更新中です'
             });
         }
-
         res.json({
             authenticated: true,
             cached: false,
             alreadyRefreshing: false,
-            data: result.data,
-            cachedAt: result.cachedAt,
-            errors: result.errors,
-            updated: result.updated
+            ...result
         });
-    } catch (e) {
-        console.error('❌ [Refresh Error]:', e.message || e);
-        res.status(500).json({ error: '更新に失敗しました', details: String(e.message || e) });
-    }
-});
-
-
-app.post('/api/campus', async (req, res) => {
-    const { id, pw } = req.body;
-    const browser = await launchBrowser();
-    try {
-        const csvPath = await fetchCampusFile(browser, id.toUpperCase(), pw);
-        const data = parseSchedule(csvPath);
-        res.json({ schedule: data, campus: data });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    } finally {
-        await closeBrowser(browser);
-    }
-});
-
-app.post('/api/moodle', async (req, res) => {
-    const { id, pw } = req.body;
-    const browser = await launchBrowser();
-    try {
-        const courses = await fetchMoodle(browser, id, pw);
-        res.json({ courses });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    } finally {
-        await closeBrowser(browser);
-    }
-});
-
-app.post('/api/assignments', async (req, res) => {
-    const { id, pw } = req.body;
-    const browser = await launchBrowser();
-    try {
-        const tasks = await fetchAssignments(browser, id, pw);
-        res.json({ tasks });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    } finally {
-        await closeBrowser(browser);
-    }
-});
-
-app.post('/api/attendance', async (req, res) => {
-    const { id, pw, classInfo } = req.body;
-    if (!id || !pw) {
-        return res.status(400).json({ error: '学籍番号とパスワードが必要です。' });
-    }
-
-    const normalizedId = normalizeId(id);
-    let cacheEntry;
-    try {
-        cacheEntry = await loadCacheEntry(normalizedId, pw);
     } catch (error) {
-        if (error instanceof InvalidCredentialsError) {
-            return res.status(401).json({ error: 'IDまたはパスワードが正しくありません' });
-        }
-        console.error('[Encrypted DB Load Error]:', error.message || error);
-        return res.status(500).json({ error: '暗号化DBを読み込めません' });
+        next(error);
     }
-    const browser = await launchBrowser();
+});
+
+app.post('/api/attendance', requireSession, async (req, res, next) => {
+    const classInfo = normalizeClassInfo(req.body.classInfo);
+    if (!classInfo) return res.status(400).json({ error: '授業情報の形式が正しくありません' });
+    const { id, password } = req.auth;
     try {
-        const attendance = await fetchAttendance(browser, id, pw, classInfo);
-        if (cacheEntry) {
-            cacheEntry.attendanceDebug = {
-                lastResult: attendance,
-                lastError: null,
+        const entry = await loadCacheEntry(id, password);
+        const attendance = await withBrowser((browser) => fetchAttendance(browser, id, password, classInfo));
+        if (entry) {
+            entry.attendanceDebug = {
                 lastFetchedAt: new Date().toISOString(),
                 classInfo,
-                attendanceHtml: attendance.attendanceHtml || null
+                summary: attendance.summary || null
             };
-            await saveCacheToFile(normalizedId, cacheEntry);
+            await saveCacheToFile(id, entry);
         }
         res.json({ attendance });
-    } catch (e) {
-        if (cacheEntry) {
-            cacheEntry.attendanceDebug = {
-                lastResult: null,
-                lastError: String(e.message || e),
-                lastFetchedAt: new Date().toISOString(),
-                classInfo,
-                attendanceHtml: null
-            };
-            await saveCacheToFile(normalizedId, cacheEntry);
-        }
-        console.error('❌ [Attendance Error]:', e.message || e);
-        res.status(500).json({ error: '出席情報の取得に失敗しました', details: String(e.message || e) });
-    } finally {
-        await closeBrowser(browser);
+    } catch (error) {
+        next(error);
     }
 });
 
-app.get('/atte', (req, res) => {
-    const id = normalizeId(req.query.id || '');
-    const entries = Object.entries(userCache).map(([key, entry]) => ({
-        id: key,
-        cachedAt: entry.cachedAt,
-        lastErrors: entry.lastErrors,
-        attendanceDebug: entry.attendanceDebug || null
-    }));
-    const filtered = id ? entries.filter((entry) => entry.id === id) : entries;
-
-    const html = ['<html><head><meta charset="utf-8"><title>Attendance Debug</title></head><body style="background:#0f172a;color:#e2e8f0;font-family:Arial,sans-serif;padding:24px;">',
-        '<h1>Attendance Debug</h1>',
-        '<p>query parameter: <code>?id=学籍番号</code></p>',
-        '<div style="margin-top:24px;">',
-        filtered.map((entry) => {
-            return `
-                <section style="margin-bottom:28px;padding:18px;border:1px solid #334155;border-radius:16px;background:#111827;">
-                    <h2 style="margin-top:0;color:#7dd3fc;">${entry.id}</h2>
-                    <div><strong>cachedAt:</strong> ${entry.cachedAt || 'なし'}</div>
-                    <div><strong>lastErrors:</strong> <pre style="white-space:pre-wrap;color:#f8fafc;">${escapeHtml(JSON.stringify(entry.lastErrors, null, 2))}</pre></div>
-                    <div><strong>attendanceDebug:</strong> <pre style="white-space:pre-wrap;color:#f8fafc;">${escapeHtml(JSON.stringify(entry.attendanceDebug, null, 2))}</pre></div>
-                    ${entry.attendanceDebug && entry.attendanceDebug.attendanceHtml ? `<div style="margin-top:16px;"><strong>attendanceHtml:</strong><div style="padding:16px;background:#020617;border-radius:12px;overflow:auto;">${entry.attendanceDebug.attendanceHtml}</div></div>` : ''}
-                </section>
-            `;
-        }).join(''),
-        '</div>',
-        '</body></html>'
-    ].join('');
-
-    res.send(html);
+app.post('/api/logout', requireSession, (req, res) => {
+    destroySession(req.sessionToken);
+    clearSessionCookie(req, res);
+    res.json({ loggedOut: true });
 });
 
-const startServer = async () => {
-    await cacheStore.ready();
-    app.listen(PORT, () => {
-    console.log('\n' + '='.repeat(50));
-    console.log(`🚀 SIT Dash Running: http://localhost:${PORT}`);
-    console.log(`📌 Max concurrent browsers: ${MAX_CONCURRENT_BROWSERS}`);
-    console.log('='.repeat(50) + '\n');
+app.use('/api', (req, res) => {
+    res.status(404).json({ error: 'APIが見つかりません' });
+});
+
+app.use((error, req, res, next) => {
+    if (res.headersSent) return next(error);
+    if (error && error.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'リクエストが大きすぎます' });
+    }
+    if (error && error.type === 'encoding.unsupported') {
+        return res.status(415).json({ error: '圧縮されたリクエストには対応していません' });
+    }
+    if (error instanceof SyntaxError && error.status === 400) {
+        return res.status(400).json({ error: 'JSONの形式が正しくありません' });
+    }
+    if (error instanceof ServiceBusyError) {
+        return res.status(503).json({ error: '処理が混み合っています。しばらく待ってください' });
+    }
+    console.error('[Server Error]:', error.message || error);
+    res.status(500).json({ error: 'サーバー処理に失敗しました' });
+});
+
+const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of sessions) {
+        if (session.expiresAt <= now) destroySession(token);
+    }
+}, 60 * 1000);
+cleanupTimer.unref();
+
+const start = async () => {
+    const issues = await cacheStore.ready();
+    if (Array.isArray(issues)) {
+        for (const issue of issues) console.error('[Cache Recovery]:', issue);
+    }
+    const httpServer = app.listen(PORT, HOST, () => {
+        console.log(`SIT Dash listening on ${HOST}:${PORT}`);
+        console.log(`Public origin: ${PUBLIC_ORIGIN}`);
+        console.log(`最大同時ブラウザ数: ${MAX_CONCURRENT_BROWSERS}`);
     });
+    httpServer.headersTimeout = 15 * 1000;
+    httpServer.requestTimeout = 2 * 60 * 1000;
+    httpServer.keepAliveTimeout = 5 * 1000;
+    httpServer.maxHeadersCount = 64;
+    httpServer.maxRequestsPerSocket = 100;
 };
 
-startServer().catch((error) => {
+start().catch((error) => {
     console.error('[Startup Error]:', error.message || error);
     process.exitCode = 1;
 });

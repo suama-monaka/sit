@@ -468,7 +468,10 @@ input {
 }
 
 .grid-header:first-child {
-    background: transparent;
+    position: sticky;
+    left: 0;
+    z-index: 4;
+    background: #111827;
 }
 
 .grid-cell {
@@ -512,6 +515,9 @@ input {
 }
 
 .period-label {
+    position: sticky;
+    left: 0;
+    z-index: 3;
     background: #334155 !important;
     width: 110px;
     font-weight: bold;
@@ -1133,6 +1139,21 @@ input {
     .drawer-link,
     .menu-button {
         min-height: 48px;
+    }
+}
+
+@media (min-width: 721px) {
+    .container.dashboard {
+        padding-top: 88px;
+    }
+}
+
+@media (max-width: 720px) {
+    .app-version {
+        position: static;
+        width: max-content;
+        margin: 16px 14px 14px auto;
+        pointer-events: none;
     }
 }
 

@@ -13,8 +13,7 @@ async function fetchMoodle(browser, id, pw) {
             try {
                 await page.waitForSelector('#username, input[name="username"]', { timeout: 10000 });
             } catch (e) {
-                console.log('Moodle: Username input not found:', e.message);
-                return [];
+                throw new Error(`Moodle username input was not found: ${e.message}`);
             }
 
             await page.focus('#username');
@@ -29,12 +28,21 @@ async function fetchMoodle(browser, id, pw) {
                     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
                 ]);
             } catch (e) {
-                console.log('Moodle: Login navigation failed or timed out:', e.message);
+                throw new Error(`Moodle login navigation failed: ${e.message}`);
             }
         }
 
+        if (await page.$('#username, input[name="username"]')) {
+            throw new Error('Moodle login failed');
+        }
+
         await page.goto('https://moodle2026.shonan-it.ac.jp/my/courses.php', { waitUntil: 'networkidle2', timeout: 30000 });
+        await page.waitForSelector('body', { timeout: 10000 });
         await new Promise(resolve => setTimeout(resolve, 1500));
+
+        if (await page.$('#username, input[name="username"]')) {
+            throw new Error('Moodle session was not authenticated');
+        }
 
         const courses = await page.evaluate(() => {
             const anchors = Array.from(document.querySelectorAll('a[href*="/course/view.php?id="]'));
@@ -118,7 +126,7 @@ async function fetchMoodle(browser, id, pw) {
         return courses;
     } catch (e) {
         console.error("Moodle Error:", e.message);
-        return [];
+        throw e;
     } finally {
         await page.close();
     }

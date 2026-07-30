@@ -8,8 +8,10 @@ const { promisify } = require('util');
 const initSqlJs = require('sql.js');
 
 const ADMIN_KEY_ENV = 'SIT_ADMIN_DECRYPTION_KEY';
+const SERVER_SECRET_ENV = 'SIT_SERVER_SECRET';
 const DATABASE_EXTENSION = '.db';
-const OUTER_FORMAT_VERSION = 2;
+const LEGACY_OUTER_FORMAT_VERSION = 2;
+const OUTER_FORMAT_VERSION = 3;
 const ADMIN_CONFIG_VERSION = 1;
 const SAFE_ID_PATTERN = /^[A-Z0-9_-]{1,64}$/;
 
@@ -225,19 +227,54 @@ const decryptAesGcm = (
     ]);
 };
 
-const envelopeAad = (normalizedId, purpose) => (
-    Buffer.from(`sit-cache:v${OUTER_FORMAT_VERSION}:${normalizedId}:${purpose}`, 'utf8')
+const envelopeAad = (
+    normalizedId,
+    purpose,
+    formatVersion = OUTER_FORMAT_VERSION
+) => (
+    Buffer.from(`sit-cache:v${formatVersion}:${normalizedId}:${purpose}`, 'utf8')
 );
 
-const deriveUserWrappingKey = async (normalizedId, password, salt) => {
+const decodeServerSecret = (secret) => {
+    if (Buffer.isBuffer(secret)) {
+        if (secret.length !== 32) {
+            throw new CacheStorageError('Server secret must be exactly 32 bytes');
+        }
+        return Buffer.from(secret);
+    }
+    const encoded = String(secret || '').trim();
+    if (!/^[a-fA-F0-9]{64}$/.test(encoded)) {
+        throw new CacheStorageError('Server secret must be 64 hexadecimal characters');
+    }
+    return Buffer.from(encoded, 'hex');
+};
+
+const deriveUserWrappingKey = async (
+    normalizedId,
+    password,
+    salt,
+    serverSecret
+) => {
     assertSecret(password, 'Password');
+    if (!Buffer.isBuffer(serverSecret) || serverSecret.length !== 32) {
+        throw new CacheStorageError('Server secret is required');
+    }
     const combinedKey = Buffer.from(`${normalizedId}${String(password)}`, 'utf8');
+    let passwordKey;
     try {
-        return Buffer.from(
+        passwordKey = Buffer.from(
             await scryptAsync(combinedKey, salt, 32, USER_SCRYPT_OPTIONS)
         );
+        return crypto.createHmac('sha256', serverSecret)
+            .update('sit-user-kek:v3', 'utf8')
+            .update(Buffer.from([0]))
+            .update(normalizedId, 'utf8')
+            .update(Buffer.from([0]))
+            .update(passwordKey)
+            .digest();
     } finally {
         combinedKey.fill(0);
+        if (passwordKey) passwordKey.fill(0);
     }
 };
 
@@ -260,9 +297,10 @@ const encodeEnvelope = (parts) => Buffer.concat([
 
 const decodeEnvelope = (bytes, databasePath) => {
     const envelope = Buffer.from(bytes);
+    const formatVersion = envelope[0];
     if (
         envelope.length <= ENVELOPE_HEADER_BYTES ||
-        envelope[0] !== OUTER_FORMAT_VERSION
+        ![LEGACY_OUTER_FORMAT_VERSION, OUTER_FORMAT_VERSION].includes(formatVersion)
     ) {
         throw new CacheIntegrityError(`Unsupported or damaged encrypted DB: ${databasePath}`);
     }
@@ -275,6 +313,7 @@ const decodeEnvelope = (bytes, databasePath) => {
     };
 
     return {
+        formatVersion,
         adminDerivationSalt: take(SALT_BYTES),
         adminEphemeralPublicKey: take(P256_PUBLIC_KEY_BYTES),
         adminHkdfSalt: take(SALT_BYTES),
@@ -301,7 +340,7 @@ const serializeValue = (value) => new Uint8Array(v8.serialize(value));
 const deserializeValue = (value) => v8.deserialize(Buffer.from(value));
 
 class DualKeyCacheStore {
-    constructor({ cacheRoot, adminPublicConfigPath } = {}) {
+    constructor({ cacheRoot, adminPublicConfigPath, serverSecret } = {}) {
         if (!cacheRoot) {
             throw new CacheStorageError('cacheRoot is required');
         }
@@ -311,25 +350,112 @@ class DualKeyCacheStore {
 
         this.cacheRoot = path.resolve(cacheRoot);
         this.adminPublicConfigPath = path.resolve(adminPublicConfigPath);
+        this.serverSecret = serverSecret === undefined
+            ? null
+            : decodeServerSecret(serverSecret);
         this.writeLocks = new Map();
     }
 
     async ready() {
         await SQL_PROMISE;
+        const issues = this.recoverInterruptedWrites();
         const adminConfig = this.readAdminPublicConfig();
+        const mismatches = [];
+        const legacyIds = [];
+        let matchingDatabaseCount = 0;
         for (const id of this.listDatabaseIds()) {
             const databasePath = this.getDatabasePath(id);
-            const bytes = fs.readFileSync(databasePath);
-            if (bytes[0] !== OUTER_FORMAT_VERSION) continue;
-            const envelope = decodeEnvelope(bytes, databasePath);
-            if (!timingSafeBufferEqual(
+            let envelope;
+            try {
+                envelope = decodeEnvelope(fs.readFileSync(databasePath), databasePath);
+            } catch (error) {
+                const quarantinedPath = this.quarantineDatabase(databasePath);
+                issues.push(
+                    quarantinedPath
+                        ? `${id}.db was damaged and moved to ${path.basename(quarantinedPath)}`
+                        : `${id}.db was damaged and could not be moved`
+                );
+                continue;
+            }
+            if (envelope.formatVersion !== OUTER_FORMAT_VERSION) {
+                legacyIds.push(id);
+            }
+            if (timingSafeBufferEqual(
                 envelope.adminDerivationSalt,
                 adminConfig.derivationSalt
             )) {
-                throw new CacheStorageError(
-                    `Administrator public configuration does not match ${id}.db`
-                );
+                matchingDatabaseCount += 1;
+            } else {
+                mismatches.push({ id, databasePath });
             }
+        }
+        if (mismatches.length && matchingDatabaseCount === 0) {
+            throw new CacheStorageError(
+                'Administrator public configuration does not match the encrypted databases'
+            );
+        }
+        for (const mismatch of mismatches) {
+            const quarantinedPath = this.quarantineDatabase(mismatch.databasePath);
+            issues.push(
+                quarantinedPath
+                    ? `${mismatch.id}.db had inconsistent key metadata and was moved to ${path.basename(quarantinedPath)}`
+                    : `${mismatch.id}.db had inconsistent key metadata and could not be moved`
+            );
+        }
+        if (legacyIds.length) {
+            throw new CacheStorageError(
+                `Encrypted DB migration is required: ${legacyIds.join(', ')}`
+            );
+        }
+        if (!this.serverSecret) {
+            throw new CacheStorageError('Server secret is required');
+        }
+        return issues;
+    }
+
+    recoverInterruptedWrites() {
+        this.ensureRoot();
+        const issues = [];
+        const backupPattern = /^\.([A-Z0-9_-]{1,64})\.([a-f0-9]{24})\.bak$/;
+        const backups = new Map();
+        for (const entry of fs.readdirSync(this.cacheRoot, { withFileTypes: true })) {
+            if (!entry.isFile()) continue;
+            const match = entry.name.match(backupPattern);
+            if (!match) continue;
+            const candidate = path.join(this.cacheRoot, entry.name);
+            const items = backups.get(match[1]) || [];
+            items.push({
+                path: candidate,
+                modifiedAt: fs.statSync(candidate).mtimeMs
+            });
+            backups.set(match[1], items);
+        }
+        for (const [id, items] of backups) {
+            const databasePath = this.getDatabasePath(id);
+            if (fs.existsSync(databasePath)) continue;
+            items.sort((left, right) => right.modifiedAt - left.modifiedAt);
+            fs.renameSync(items[0].path, databasePath);
+            issues.push(`${id}.db was restored from an interrupted write backup`);
+        }
+        return issues;
+    }
+
+    quarantineDatabase(databasePath) {
+        const resolved = path.resolve(databasePath);
+        const relative = path.relative(this.cacheRoot, resolved);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+            throw new CacheStorageError('Damaged DB path escaped cache root');
+        }
+        const token = crypto.randomBytes(8).toString('hex');
+        const quarantinePath = path.join(
+            this.cacheRoot,
+            `.${path.basename(databasePath, DATABASE_EXTENSION)}.corrupt-${Date.now()}-${token}${DATABASE_EXTENSION}`
+        );
+        try {
+            fs.renameSync(resolved, quarantinePath);
+            return quarantinePath;
+        } catch {
+            return null;
         }
     }
 
@@ -353,6 +479,13 @@ class DualKeyCacheStore {
             throw new CacheStorageError('Resolved DB path escaped cache root');
         }
         return databasePath;
+    }
+
+    requireServerSecret() {
+        if (!this.serverSecret) {
+            throw new CacheStorageError('Server secret is required');
+        }
+        return this.serverSecret;
     }
 
     readAdminPublicConfig() {
@@ -531,7 +664,7 @@ class DualKeyCacheStore {
             'sha256',
             sharedSecret,
             hkdfSalt,
-            envelopeAad(normalizedId, 'admin-kek'),
+            envelopeAad(normalizedId, 'admin-kek', OUTER_FORMAT_VERSION),
             32
         ));
         try {
@@ -541,7 +674,7 @@ class DualKeyCacheStore {
                 wrappedKey: encryptAesGcm(
                     wrappingKey,
                     dataKey,
-                    envelopeAad(normalizedId, 'admin-wrap')
+                    envelopeAad(normalizedId, 'admin-wrap', OUTER_FORMAT_VERSION)
                 )
             };
         } finally {
@@ -563,7 +696,7 @@ class DualKeyCacheStore {
                 'sha256',
                 sharedSecret,
                 envelope.adminHkdfSalt,
-                envelopeAad(normalizedId, 'admin-kek'),
+                envelopeAad(normalizedId, 'admin-kek', envelope.formatVersion),
                 32
             ));
             return decryptAesGcm(
@@ -571,7 +704,7 @@ class DualKeyCacheStore {
                 envelope.adminWrappedKey.nonce,
                 envelope.adminWrappedKey.authTag,
                 envelope.adminWrappedKey.ciphertext,
-                envelopeAad(normalizedId, 'admin-wrap')
+                envelopeAad(normalizedId, 'admin-wrap', envelope.formatVersion)
             );
         } catch (error) {
             throw new AdminKeyError(undefined, { cause: error });
@@ -583,10 +716,14 @@ class DualKeyCacheStore {
     }
 
     async unwrapDataKeyWithUser(envelope, normalizedId, password) {
+        if (envelope.formatVersion !== OUTER_FORMAT_VERSION) {
+            throw new CacheStorageError('Encrypted DB migration is required');
+        }
         const wrappingKey = await deriveUserWrappingKey(
             normalizedId,
             password,
-            envelope.userSalt
+            envelope.userSalt,
+            this.requireServerSecret()
         );
         try {
             return decryptAesGcm(
@@ -594,7 +731,7 @@ class DualKeyCacheStore {
                 envelope.userWrappedKey.nonce,
                 envelope.userWrappedKey.authTag,
                 envelope.userWrappedKey.ciphertext,
-                envelopeAad(normalizedId, 'user-wrap')
+                envelopeAad(normalizedId, 'user-wrap', envelope.formatVersion)
             );
         } catch (error) {
             throw new InvalidCredentialsError(undefined, { cause: error });
@@ -610,7 +747,7 @@ class DualKeyCacheStore {
                 envelope.data.nonce,
                 envelope.data.authTag,
                 envelope.data.ciphertext,
-                envelopeAad(normalizedId, 'sqlite-image')
+                envelopeAad(normalizedId, 'sqlite-image', envelope.formatVersion)
             );
         } catch (error) {
             throw new CacheIntegrityError('Encrypted SQLite image authentication failed', {
@@ -683,7 +820,8 @@ class DualKeyCacheStore {
         const userWrappingKey = await deriveUserWrappingKey(
             safeId,
             password,
-            userSalt
+            userSalt,
+            this.requireServerSecret()
         );
 
         try {
@@ -691,12 +829,12 @@ class DualKeyCacheStore {
             const userWrappedKey = encryptAesGcm(
                 userWrappingKey,
                 dataKey,
-                envelopeAad(safeId, 'user-wrap')
+                envelopeAad(safeId, 'user-wrap', OUTER_FORMAT_VERSION)
             );
             const data = encryptAesGcm(
                 dataKey,
                 sqliteBytes,
-                envelopeAad(safeId, 'sqlite-image')
+                envelopeAad(safeId, 'sqlite-image', OUTER_FORMAT_VERSION)
             );
             return encodeEnvelope({
                 adminDerivationSalt: adminConfig.derivationSalt,
@@ -750,6 +888,26 @@ class DualKeyCacheStore {
         }
     }
 
+    async reencryptAllWithAdminKey(adminSecret) {
+        assertSecret(adminSecret, 'Administrator decryption key', 12);
+        this.requireServerSecret();
+        const migrated = [];
+        for (const id of this.listDatabaseIds()) {
+            const cacheEntry = await this.loadWithAdminKey(id, adminSecret);
+            if (!cacheEntry || typeof cacheEntry.pw !== 'string') {
+                throw new CacheStorageError(`Stored password is missing for ${id}`);
+            }
+            const encryptedBytes = await this.buildEncryptedDatabase(
+                id,
+                cacheEntry.pw,
+                cacheEntry
+            );
+            this.writeAtomically(id, encryptedBytes);
+            migrated.push(id);
+        }
+        return migrated;
+    }
+
     async saveWithUserCredentials(normalizedId, password, cacheEntry) {
         const safeId = this.assertSafeId(normalizedId);
         assertSecret(password, 'Password');
@@ -778,6 +936,7 @@ const createDualKeyCacheStore = (options) => new DualKeyCacheStore(options);
 
 module.exports = {
     ADMIN_KEY_ENV,
+    SERVER_SECRET_ENV,
     AdminKeyError,
     CacheIntegrityError,
     CacheStorageError,
@@ -785,6 +944,8 @@ module.exports = {
     OUTER_FORMAT_VERSION,
     createDualKeyCacheStore,
     decodeAdminPublicConfig,
+    decodeEnvelope,
+    decodeServerSecret,
     encodeAdminPublicConfig,
     verifyAdminSecretForConfig,
     writeAdminPublicConfig
