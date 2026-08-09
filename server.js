@@ -17,7 +17,7 @@ const {
 const { createLoginAuditStore } = require('./logic/login-audit-store');
 
 const app = express();
-const PORT = 4007;
+const PORT = 10000;
 const HOST = '0.0.0.0';
 const MAX_CONCURRENT_BROWSERS = 12;
 const MAX_QUEUED_BROWSER_JOBS = 12;
