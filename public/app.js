@@ -69,14 +69,22 @@ const doLogin = async () => {
         const body = await login(id, pw);
         reportExtensionLoginResult(true);
         renderPageData(body.data, body.cached ? 'キャッシュ' : '最新');
-        setCacheInfo(body.cachedAt, body.cached ? 'キャッシュ' : '最新');
+        setCacheInfo(
+            body.cachedAt,
+            body.cached ? 'キャッシュ' : '最新',
+            body.cachedVersion || body.data?.cachedVersion
+        );
 
         if (passwordInput) passwordInput.value = '';
         if (body.cached && body.updating) {
             setStatus('キャッシュデータを表示しました。最新情報を取得中です...');
             const latest = await pollRefreshUntilUpdated();
             renderPageData(latest.data, '最新');
-            setCacheInfo(latest.cachedAt, '最新');
+            setCacheInfo(
+                latest.cachedAt,
+                '最新',
+                latest.cachedVersion || latest.data?.cachedVersion
+            );
             setStatus('最新データに更新されました。');
         } else if (body.cached) {
             setStatus('キャッシュデータを表示しました。');
@@ -103,7 +111,11 @@ const doRefresh = async ({ force = false } = {}) => {
     try {
         const body = await refreshData({ force });
         renderPageData(body.data, body.cached ? 'キャッシュ' : '最新');
-        setCacheInfo(body.cachedAt, body.cached ? 'キャッシュ' : '最新');
+        setCacheInfo(
+            body.cachedAt,
+            body.cached ? 'キャッシュ' : '最新',
+            body.cachedVersion || body.data?.cachedVersion
+        );
         if (body.updated) {
             setStatus('最新データに更新されました。');
         } else if (body.message) {

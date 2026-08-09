@@ -3,6 +3,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const currentUser = {
     id: '',
     cachedAt: '',
+    cachedVersion: '',
     attendance: []
 };
 
@@ -38,6 +39,7 @@ export const login = async (id, pw) => {
     const body = await fetchJson('./api/login', { id, pw });
     currentUser.id = id;
     currentUser.cachedAt = body.cachedAt || '';
+    currentUser.cachedVersion = body.cachedVersion || body.data?.cachedVersion || '';
     currentUser.attendance = Array.isArray(body.data?.attendance) ? body.data.attendance : [];
     return body;
 };
@@ -52,6 +54,7 @@ export const refreshData = async ({ force = false, wait = false } = {}) => {
         wait
     });
     currentUser.cachedAt = body.cachedAt || currentUser.cachedAt;
+    currentUser.cachedVersion = body.cachedVersion || body.data?.cachedVersion || currentUser.cachedVersion;
     currentUser.attendance = Array.isArray(body.data?.attendance) ? body.data.attendance : currentUser.attendance;
     return body;
 };

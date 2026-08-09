@@ -220,7 +220,7 @@ export const setStatus = (message, isError = false) => {
     statusMessage.style.color = isError ? '#f87171' : '#cbd5e1';
 };
 
-export const setCacheInfo = (cachedAt, label = 'キャッシュ') => {
+export const setCacheInfo = (cachedAt, label = 'キャッシュ', cachedVersion = '') => {
     const cacheInfo = document.getElementById('cache-info');
     if (!cacheInfo) return;
     if (!cachedAt) {
@@ -228,7 +228,10 @@ export const setCacheInfo = (cachedAt, label = 'キャッシュ') => {
         return;
     }
     const date = new Date(cachedAt);
-    cacheInfo.textContent = `${label}日時: ${date.toLocaleString()}`;
+    const version = /^\d+\.\d+\.\d+$/.test(String(cachedVersion || ''))
+        ? ` / 保存時: v${cachedVersion}`
+        : '';
+    cacheInfo.textContent = `${label}日時: ${date.toLocaleString()}${version}`;
 };
 
 export const fillLoadingPlaceholders = () => {

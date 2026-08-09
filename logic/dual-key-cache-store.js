@@ -98,6 +98,7 @@ const normalizePersistedCache = (cacheEntry, password) => ({
         ? cacheEntry.grades
         : { scope: '', records: [] },
     cachedAt: cacheEntry.cachedAt,
+    cachedVersion: String(cacheEntry.cachedVersion || ''),
     lastErrors: cacheEntry.lastErrors,
     attendanceDebug: cacheEntry.attendanceDebug || null
 });
@@ -524,6 +525,7 @@ class DualKeyCacheStore {
                     tasks BLOB NOT NULL,
                     attendance BLOB NOT NULL,
                     cached_at TEXT,
+                    cached_version TEXT NOT NULL,
                     last_errors BLOB NOT NULL,
                     attendance_debug BLOB NOT NULL,
                     grades BLOB NOT NULL
@@ -540,10 +542,11 @@ class DualKeyCacheStore {
                     tasks,
                     attendance,
                     cached_at,
+                    cached_version,
                     last_errors,
                     attendance_debug,
                     grades
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
                 normalizedId,
                 new Uint8Array(passwordHash),
@@ -555,6 +558,7 @@ class DualKeyCacheStore {
                     Array.isArray(cacheEntry.attendance) ? cacheEntry.attendance : []
                 ),
                 cacheEntry.cachedAt || null,
+                String(cacheEntry.cachedVersion || ''),
                 serializeValue(cacheEntry.lastErrors),
                 serializeValue(cacheEntry.attendanceDebug || null),
                 serializeValue(
@@ -590,6 +594,7 @@ class DualKeyCacheStore {
             );
             const hasCredentialSecret = columnNames.has('credential_secret');
             const hasGrades = columnNames.has('grades');
+            const hasCachedVersion = columnNames.has('cached_version');
             const result = database.exec(`
                 SELECT
                     identity,
@@ -600,6 +605,7 @@ class DualKeyCacheStore {
                     tasks,
                     attendance,
                     cached_at,
+                    ${hasCachedVersion ? 'cached_version' : "'' AS cached_version"},
                     last_errors,
                     attendance_debug,
                     ${hasGrades ? 'grades' : 'NULL AS grades'}
@@ -650,10 +656,11 @@ class DualKeyCacheStore {
                 tasks: deserializeValue(row[4 + valueOffset]),
                 attendance: deserializeValue(row[5 + valueOffset]),
                 cachedAt: row[6 + valueOffset],
-                lastErrors: deserializeValue(row[7 + valueOffset]),
-                attendanceDebug: deserializeValue(row[8 + valueOffset]),
+                cachedVersion: String(row[7 + valueOffset] || ''),
+                lastErrors: deserializeValue(row[8 + valueOffset]),
+                attendanceDebug: deserializeValue(row[9 + valueOffset]),
                 grades: hasGrades
-                    ? deserializeValue(row[9 + valueOffset])
+                    ? deserializeValue(row[10 + valueOffset])
                     : { scope: '', records: [] }
             }, storedPassword);
         } catch (error) {

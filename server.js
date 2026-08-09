@@ -15,9 +15,10 @@ const {
     normalizeClassInfo
 } = require('./logic/dashboard-service');
 const { createLoginAuditStore } = require('./logic/login-audit-store');
+const { APP_VERSION } = require('./logic/app-version');
 
 const app = express();
-const PORT = 10000;
+const PORT = 4007;
 const HOST = '0.0.0.0';
 const MAX_CONCURRENT_BROWSERS = 12;
 const MAX_QUEUED_BROWSER_JOBS = 12;
@@ -58,6 +59,7 @@ const cacheStore = createDualKeyCacheStore({
     serverSecret
 });
 const loginAuditStore = createLoginAuditStore({
+    appVersion: APP_VERSION,
     databasePath: path.join(CACHE_ROOT, 'data.db'),
     serverSecret
 });
@@ -371,6 +373,7 @@ const {
     saveCacheToFile,
     updateCacheWithPartialResult
 } = createDashboardService({
+    appVersion: APP_VERSION,
     cacheStore,
     withBrowser,
     userCache,
@@ -394,6 +397,7 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
                 cached: true,
                 data: publicData(cachedEntry),
                 cachedAt: cachedEntry.cachedAt,
+                cachedVersion: cachedEntry.cachedVersion,
                 updating
             });
             if (updating) {
@@ -417,6 +421,7 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
             attendance: result.attendance || [],
             grades: result.gradesData,
             cachedAt: new Date().toISOString(),
+            cachedVersion: APP_VERSION,
             refreshing: false,
             refreshPromise: null,
             lastErrors: {
@@ -437,6 +442,7 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
             cached: false,
             data: publicData(entry),
             cachedAt: entry.cachedAt,
+            cachedVersion: entry.cachedVersion,
             errors: entry.lastErrors,
             updating: false
         });
@@ -470,6 +476,7 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
                 alreadyRefreshing: false,
                 data: publicData(entry),
                 cachedAt: entry.cachedAt,
+            cachedVersion: entry.cachedVersion,
                 message: '最新のキャッシュデータがあります'
             });
         }
@@ -490,6 +497,7 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
                 alreadyRefreshing: true,
                 data: publicData(entry),
                 cachedAt: entry.cachedAt,
+            cachedVersion: entry.cachedVersion,
                 message: '現在バックグラウンド更新中です'
             });
         }

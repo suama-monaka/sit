@@ -39,6 +39,7 @@ const safeMoodleUrl = (value) => {
 };
 
 const publicData = (entry) => ({
+    cachedVersion: String(entry.cachedVersion || ''),
     campus: entry.campus,
     schedule: entry.campus,
     courses: Array.isArray(entry.courses)
@@ -84,7 +85,10 @@ const normalizeClassInfo = (value) => {
     return result;
 };
 
-const createDashboardService = ({ cacheStore, withBrowser, userCache, releaseUserIfUnused }) => {
+const createDashboardService = ({ appVersion, cacheStore, withBrowser, userCache, releaseUserIfUnused }) => {
+    if (typeof appVersion !== 'string' || !/^\d+\.\d+\.\d+$/.test(appVersion)) {
+        throw new TypeError('appVersion is required');
+    }
     if (!cacheStore || typeof cacheStore.loadWithUserCredentials !== 'function') {
         throw new TypeError('cacheStore is required');
     }
@@ -198,6 +202,7 @@ const createDashboardService = ({ cacheStore, withBrowser, userCache, releaseUse
         };
         if (updated) {
             entry.cachedAt = new Date().toISOString();
+            entry.cachedVersion = appVersion;
             await saveCacheToFile(id, entry);
         }
         return updated;
@@ -207,7 +212,11 @@ const createDashboardService = ({ cacheStore, withBrowser, userCache, releaseUse
         const entry = userCache.get(id);
         if (!entry) throw new Error('キャッシュエントリが存在しません');
         if (entry.refreshing) {
-            return { alreadyRefreshing: true, cachedAt: entry.cachedAt };
+            return {
+                alreadyRefreshing: true,
+                cachedAt: entry.cachedAt,
+                cachedVersion: entry.cachedVersion
+            };
         }
         entry.refreshing = true;
         entry.refreshPromise = (async () => {
@@ -218,6 +227,7 @@ const createDashboardService = ({ cacheStore, withBrowser, userCache, releaseUse
                     alreadyRefreshing: false,
                     updated,
                     cachedAt: entry.cachedAt,
+                    cachedVersion: entry.cachedVersion,
                     errors: entry.lastErrors,
                     data: publicData(entry)
                 };

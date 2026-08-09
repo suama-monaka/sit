@@ -104,10 +104,14 @@ const decryptDatabase = (encryptedBytes, serverSecret) => {
 };
 
 class LoginAuditStore {
-    constructor({ databasePath, serverSecret, logger = console } = {}) {
+    constructor({ appVersion = '', databasePath, serverSecret, logger = console } = {}) {
         if (typeof databasePath !== 'string' || !databasePath) {
             throw new TypeError('databasePath is required');
         }
+        if (appVersion && !/^\d+\.\d+\.\d+$/.test(appVersion)) {
+            throw new TypeError('appVersion is invalid');
+        }
+        this.appVersion = appVersion;
         this.databasePath = path.resolve(databasePath);
         this.serverSecret = decodeServerSecret(serverSecret);
         this.logger = logger;
@@ -120,7 +124,9 @@ class LoginAuditStore {
         if (this.database) return;
         const SQL = await SQL_PROMISE;
         fs.mkdirSync(path.dirname(this.databasePath), { recursive: true });
-        if (fs.existsSync(this.databasePath)) {
+        const databaseExists = fs.existsSync(this.databasePath);
+        let schemaChanged = !databaseExists;
+        if (databaseExists) {
             const decrypted = decryptDatabase(
                 fs.readFileSync(this.databasePath),
                 this.serverSecret
@@ -139,9 +145,18 @@ class LoginAuditStore {
             CREATE TABLE IF NOT EXISTS login_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL CHECK(length(user_id) BETWEEN 1 AND 64),
-                logged_in_at TEXT NOT NULL
+                logged_in_at TEXT NOT NULL,
+                app_version TEXT NOT NULL DEFAULT ''
             )
         `);
+        const columns = new Set(
+            (this.database.exec('PRAGMA table_info(login_events)')[0]?.values || [])
+                .map((column) => column[1])
+        );
+        if (!columns.has('app_version')) {
+            this.database.run("ALTER TABLE login_events ADD COLUMN app_version TEXT NOT NULL DEFAULT ''");
+            schemaChanged = true;
+        }
         this.database.run(`
             CREATE INDEX IF NOT EXISTS login_events_logged_in_at
             ON login_events(logged_in_at DESC)
@@ -151,7 +166,7 @@ class LoginAuditStore {
         if (status !== 'ok') {
             throw new LoginAuditIntegrityError('Login audit SQLite integrity check failed');
         }
-        if (!fs.existsSync(this.databasePath)) this.persist();
+        if (schemaChanged) this.persist();
     }
 
     persist() {
@@ -216,12 +231,12 @@ class LoginAuditStore {
         const operation = this.operationQueue.then(async () => {
             await this.initialize();
             this.database.run(
-                'INSERT INTO login_events(user_id, logged_in_at) VALUES (?, ?)',
-                [normalizedId, timestamp]
+                'INSERT INTO login_events(user_id, logged_in_at, app_version) VALUES (?, ?, ?)',
+                [normalizedId, timestamp, this.appVersion]
             );
             this.persist();
-            this.logger.log(`[Login Success] ID=${normalizedId} loggedAt=${timestamp}`);
-            return { userId: normalizedId, loggedInAt: timestamp };
+            this.logger.log(`[Login Success] ID=${normalizedId} loggedAt=${timestamp} version=${this.appVersion || 'unknown'}`);
+            return { userId: normalizedId, loggedInAt: timestamp, appVersion: this.appVersion };
         });
         this.operationQueue = operation.catch(() => undefined);
         return operation;
@@ -231,7 +246,7 @@ class LoginAuditStore {
         const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 100));
         await this.ready();
         const statement = this.database.prepare(`
-            SELECT user_id, logged_in_at
+            SELECT user_id, logged_in_at, app_version
             FROM login_events
             ORDER BY event_id DESC
             LIMIT ?
