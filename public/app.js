@@ -1,5 +1,6 @@
 import { currentUser, login, refreshData, pollRefreshUntilUpdated } from './data.js';
-import { renderSchedule, renderList, renderAssignments, fillLoadingPlaceholders, setCacheInfo, setStatus, setupDetailPanelEvents, openDetailPanel } from './ui.js';
+import { renderSchedule, renderList, renderAssignments, renderGrades, fillLoadingPlaceholders, setCacheInfo, setStatus, setupDetailPanelEvents, openDetailPanel } from './ui.js';
+import { reportExtensionLoginResult, setupExtensionNotifications } from './notifications.js';
 
 const cacheInfo = document.getElementById('cache-info');
 const refreshBtn = document.getElementById('refresh-btn');
@@ -33,6 +34,7 @@ const renderPageData = (data, sourceLabel = '最新') => {
     if (data.schedule) renderSchedule(data);
     if (data.courses) renderList('course-list', data.courses);
     if (data.tasks) renderAssignments('task-list', data.tasks);
+    renderGrades(data.grades);
     if (data.attendance) {
         window.currentAttendanceRows = data.attendance;
         currentUser.attendance = Array.isArray(data.attendance) ? data.attendance : currentUser.attendance;
@@ -54,7 +56,7 @@ const doLogin = async () => {
     const id = usernameInput?.value.trim();
     const pw = passwordInput?.value;
     if (!id || !pw) {
-        return alert('学籍番号とパスワードを入力してください');
+        return alert('IDとパスワードを入力してください');
     }
 
     showMainView();
@@ -65,6 +67,7 @@ const doLogin = async () => {
 
     try {
         const body = await login(id, pw);
+        reportExtensionLoginResult(true);
         renderPageData(body.data, body.cached ? 'キャッシュ' : '最新');
         setCacheInfo(body.cachedAt, body.cached ? 'キャッシュ' : '最新');
 
@@ -81,6 +84,7 @@ const doLogin = async () => {
             setStatus('最新データを取得しました。');
         }
     } catch (e) {
+        reportExtensionLoginResult(false);
         console.error(e);
         alert(e.message || '同期に失敗しました');
         showLoginView();
@@ -151,6 +155,7 @@ const toggleDrawer = () => {
 };
 
 const initUi = () => {
+    setupExtensionNotifications();
     setupDetailPanelEvents();
     if (syncBtn) syncBtn.addEventListener('click', doLogin);
     if (refreshBtn) refreshBtn.addEventListener('click', () => doRefresh({ force: true }));

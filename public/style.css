@@ -444,6 +444,48 @@ input {
     padding-bottom: 10px;
 }
 
+.semester-switch {
+    display: inline-flex;
+    gap: 4px;
+    margin-top: 14px;
+    padding: 4px;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    background: #111827;
+}
+
+.semester-switch[hidden] {
+    display: none;
+}
+
+.semester-button {
+    min-width: 88px;
+    border: 0;
+    border-radius: 9px;
+    padding: 8px 14px;
+    background: transparent;
+    color: #94a3b8;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.semester-button:hover,
+.semester-button:focus-visible {
+    color: #f8fafc;
+    background: #1e293b;
+}
+
+.semester-button.active {
+    color: #fff;
+    background: #2563eb;
+}
+
+.semester-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .schedule-grid {
     display: grid;
     
@@ -1157,6 +1199,851 @@ input {
     }
 }
 
+.notification-center {
+    position: fixed;
+    top: 20px;
+    right: 224px;
+    z-index: 1300;
+}
+
+.notification-button {
+    position: relative;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid #475569;
+    border-radius: 50%;
+    background: rgba(30, 41, 59, 0.96);
+    color: #f8fafc;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.notification-button:hover,
+.notification-button:focus-visible {
+    background: #334155;
+}
+
+.notification-bell {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.notification-badge {
+    position: absolute;
+    top: -6px;
+    right: -8px;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border: 2px solid #0f172a;
+    border-radius: 999px;
+    background: #e11d48;
+    color: white;
+    font-size: 0.72rem;
+    line-height: 18px;
+    text-align: center;
+}
+
+.notification-panel {
+    position: fixed;
+    top: 76px;
+    right: 20px;
+    width: min(390px, calc(100vw - 28px));
+    max-height: min(620px, calc(100vh - 92px));
+    overflow-y: auto;
+    border: 1px solid #475569;
+    border-radius: 14px;
+    background: #202124;
+    color: #f8fafc;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.notification-panel.hidden {
+    display: none;
+}
+
+.notification-panel-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid #475569;
+    background: #202124;
+}
+
+.notification-panel-header h2 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.notification-close {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: #f8fafc;
+    font-size: 1.35rem;
+}
+
+.notification-item {
+    display: block;
+    margin: 12px 8px;
+    padding: 12px;
+    border-radius: 12px;
+    color: #f8fafc;
+    text-decoration: none;
+}
+
+.notification-item:hover,
+.notification-item:focus-visible {
+    background: #303134;
+}
+
+.notification-item[hidden] {
+    display: none;
+}
+
+.notification-item-body {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+    line-height: 1.45;
+}
+
+.notification-item-body span {
+    color: #e2e8f0;
+    font-size: 0.9rem;
+}
+
+.notification-item-body small {
+    color: #94a3b8;
+}
+
+.notification-empty {
+    padding: 24px 16px 28px;
+    color: #cbd5e1;
+    text-align: center;
+}
+
+@media (max-width: 720px) {
+    .notification-center {
+        position: absolute;
+        top: 58px;
+        right: 14px;
+    }
+
+    .app-shell {
+        padding-top: 56px;
+    }
+
+    .notification-panel {
+        top: 110px;
+        right: 14px;
+        width: calc(100vw - 28px);
+        max-height: calc(100vh - 124px);
+    }
+}
+
 body.modal-open {
     overflow: hidden;
+}
+
+
+.grades-section {
+    position: relative;
+    margin-top: 24px;
+    overflow: hidden;
+    border-color: rgba(96, 165, 250, 0.18);
+    background: linear-gradient(145deg, rgba(17, 24, 39, 0.98), rgba(10, 18, 32, 0.98));
+    box-shadow: 0 24px 70px rgba(2, 6, 23, 0.26);
+}
+
+.grades-section::before {
+    position: absolute;
+    top: 0;
+    left: 22px;
+    right: 22px;
+    height: 2px;
+    content: "";
+    background: linear-gradient(90deg, #60a5fa, #818cf8 55%, transparent);
+}
+
+.grades-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.grades-eyebrow {
+    margin-bottom: 6px;
+    color: #60a5fa;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+}
+
+.grades-heading .section-title {
+    margin: 0;
+    font-size: 1.24rem;
+    letter-spacing: 0.01em;
+}
+
+.grades-summary {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-height: 38px;
+    color: #94a3b8;
+    font-size: 0.82rem;
+}
+
+.grades-scope,
+.grades-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 7px 11px;
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    white-space: nowrap;
+}
+
+.grades-scope strong,
+.grades-count strong {
+    color: #e2e8f0;
+    font-size: 0.86rem;
+}
+
+.grades-count strong {
+    color: #93c5fd;
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+}
+
+#grades-list {
+    margin-top: 18px;
+}
+
+.grades-table-wrap {
+    width: 100%;
+    overflow: auto;
+    border: 1px solid rgba(71, 85, 105, 0.52);
+    border-radius: 16px;
+    outline: none;
+    background: rgba(6, 13, 26, 0.7);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
+    -webkit-overflow-scrolling: touch;
+}
+
+.grades-table-wrap:focus-visible {
+    border-color: #60a5fa;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+}
+
+.grades-table {
+    width: 100%;
+    min-width: 940px;
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: fixed;
+}
+
+.grade-col-year {
+    width: 62px;
+}
+
+.grade-col-term {
+    width: 64px;
+}
+
+.grade-col-code {
+    width: 102px;
+}
+
+.grade-col-name {
+    width: auto;
+}
+
+.grade-col-teacher {
+    width: 94px;
+}
+
+.grade-col-score,
+.grade-col-mark {
+    width: 58px;
+}
+
+.grade-col-result {
+    width: 70px;
+}
+
+.grades-table th,
+.grades-table td {
+    padding: 15px 12px;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.72);
+    text-align: left;
+    vertical-align: middle;
+}
+
+.grades-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #172136;
+    color: #9fb0c9;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+.grades-table td {
+    color: #dce6f5;
+    font-size: 0.84rem;
+    line-height: 1.55;
+    transition: background 0.18s ease;
+}
+
+.grades-table tbody tr:nth-child(even) td {
+    background: rgba(15, 23, 42, 0.3);
+}
+
+.grades-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.grades-table tbody tr:hover td {
+    background: rgba(37, 99, 235, 0.09);
+}
+
+.grade-meta {
+    color: #aebdd2 !important;
+    font-variant-numeric: tabular-nums;
+}
+
+.grade-code {
+    display: inline-flex;
+    padding: 4px 7px;
+    border: 1px solid rgba(96, 165, 250, 0.16);
+    border-radius: 7px;
+    background: rgba(30, 64, 175, 0.1);
+    color: #bfdbfe;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-size: 0.76rem;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+}
+
+.grade-name {
+    min-width: 230px;
+    color: #f8fafc !important;
+    font-weight: 700;
+    line-height: 1.45 !important;
+}
+
+.grade-teacher {
+    color: #cbd5e1 !important;
+}
+
+.grade-score {
+    color: #f8fafc !important;
+    font-size: 0.92rem !important;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+
+.grade-mark {
+    display: inline-flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 9px;
+    background: rgba(51, 65, 85, 0.58);
+    color: #e2e8f0;
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.grade-mark-s {
+    border-color: rgba(167, 139, 250, 0.32);
+    background: rgba(124, 58, 237, 0.18);
+    color: #ddd6fe;
+}
+
+.grade-mark-a {
+    border-color: rgba(96, 165, 250, 0.32);
+    background: rgba(37, 99, 235, 0.18);
+    color: #bfdbfe;
+}
+
+.grade-mark-b {
+    border-color: rgba(45, 212, 191, 0.28);
+    background: rgba(13, 148, 136, 0.16);
+    color: #99f6e4;
+}
+
+.grade-mark-c {
+    border-color: rgba(251, 191, 36, 0.26);
+    background: rgba(217, 119, 6, 0.14);
+    color: #fde68a;
+}
+
+.grade-result {
+    display: inline-flex;
+    min-width: 46px;
+    min-height: 28px;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 9px;
+    border: 1px solid rgba(148, 163, 184, 0.14);
+    border-radius: 999px;
+    background: rgba(51, 65, 85, 0.58);
+    color: #cbd5e1;
+    font-size: 0.76rem;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.grade-result-pass {
+    border-color: rgba(52, 211, 153, 0.2);
+    background: rgba(16, 185, 129, 0.16);
+    color: #6ee7b7;
+}
+
+.grade-result-pass::before,
+.grade-result-fail::before {
+    width: 5px;
+    height: 5px;
+    margin-right: 6px;
+    border-radius: 50%;
+    content: "";
+    background: currentColor;
+}
+
+.grade-result-fail {
+    border-color: rgba(248, 113, 113, 0.24);
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+}
+
+@media (max-width: 760px) {
+    .grades-section {
+        margin-top: 16px;
+        padding: 18px 14px;
+        overflow: visible;
+    }
+
+    .grades-section::before {
+        left: 14px;
+        right: 14px;
+    }
+
+    .grades-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    .grades-summary {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    #grades-list {
+        margin-top: 16px;
+    }
+
+    .grades-table-wrap {
+        overflow: visible;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    .grades-table,
+    .grades-table tbody {
+        display: block;
+        min-width: 0;
+    }
+
+    .grades-table colgroup,
+    .grades-table thead {
+        display: none;
+    }
+
+    .grades-table tbody {
+        display: grid;
+        gap: 12px;
+    }
+
+    .grades-table tbody tr {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 4px 18px;
+        padding: 16px;
+        border: 1px solid rgba(71, 85, 105, 0.48);
+        border-radius: 15px;
+        background: rgba(8, 16, 30, 0.78);
+        box-shadow: 0 10px 28px rgba(2, 6, 23, 0.18);
+    }
+
+    .grades-table td,
+    .grades-table tbody tr:nth-child(even) td,
+    .grades-table tbody tr:hover td {
+        display: grid;
+        grid-template-columns: 78px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        padding: 7px 0;
+        border: 0;
+        background: transparent;
+        font-size: 0.82rem;
+    }
+
+    .grades-table td::before {
+        color: #71819b;
+        content: attr(data-label);
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+    }
+
+    .grades-table .grade-name {
+        grid-column: 1 / -1;
+        grid-template-columns: 1fr;
+        order: -2;
+        min-width: 0;
+        padding: 0 0 12px;
+        margin-bottom: 5px;
+        border-bottom: 1px solid rgba(51, 65, 85, 0.66);
+        font-size: 0.96rem;
+    }
+
+    .grades-table .grade-name::before {
+        display: none;
+    }
+
+    .grades-table .grade-teacher,
+    .grades-table td[data-label="時間割コード"] {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 480px) {
+    .grades-table tbody tr {
+        grid-template-columns: 1fr;
+    }
+
+    .grades-table .grade-name,
+    .grades-table .grade-teacher,
+    .grades-table td[data-label="時間割コード"] {
+        grid-column: auto;
+    }
+
+    .grades-scope {
+        max-width: 100%;
+        white-space: normal;
+    }
+}
+@media (max-width: 600px) {
+    body {
+        background:
+            radial-gradient(circle at 50% -10%, rgba(37, 99, 235, 0.13), transparent 34%),
+            #0b1220;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .container {
+        padding-right: 10px;
+        padding-left: 10px;
+    }
+
+    .dashboard {
+        gap: 14px;
+        padding-top: 10px;
+        padding-bottom: 18px;
+    }
+
+    .datetime-display {
+        margin: 0 10px 10px;
+        padding: 9px 12px;
+        border-radius: 0 0 14px 14px;
+        font-size: 0.78rem;
+        box-shadow: none;
+    }
+
+    .main-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        padding: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.13);
+        border-radius: 18px;
+        background: rgba(17, 24, 39, 0.88);
+    }
+
+    .header-left {
+        width: auto;
+        min-width: 0;
+        flex-wrap: nowrap;
+        gap: 10px;
+    }
+
+    .header-left h2 {
+        margin: 0;
+        overflow: hidden;
+        font-size: 1rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .cache-info {
+        overflow: hidden;
+        margin-top: 3px;
+        font-size: 0.68rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .menu-button {
+        width: 42px;
+        min-width: 42px;
+        height: 42px;
+        min-height: 42px;
+        border-radius: 12px;
+    }
+
+    .main-actions {
+        width: auto;
+    }
+
+    .main-actions .action-button.compact {
+        width: auto;
+        min-width: 62px;
+        padding: 11px 12px;
+        border-radius: 12px;
+        font-size: 0.78rem;
+    }
+
+    .status-message {
+        margin: 0;
+        padding: 11px 13px;
+        border: 1px solid rgba(96, 165, 250, 0.14);
+        border-radius: 13px;
+        background: rgba(30, 64, 175, 0.08);
+        font-size: 0.78rem;
+        line-height: 1.55;
+    }
+
+    .dashboard-section {
+        padding: 15px 13px;
+        border-radius: 18px;
+    }
+
+    .section-title {
+        margin-bottom: 12px;
+        font-size: 1rem;
+    }
+
+    .section-subtitle {
+        display: block;
+        margin-top: 4px;
+        font-size: 0.72rem;
+    }
+
+    .dashboard-grid {
+        gap: 14px;
+    }
+
+    #schedule-list {
+        margin-top: 12px;
+        padding-bottom: 5px;
+    }
+
+    .semester-switch {
+        width: 100%;
+    }
+
+    .semester-button {
+        flex: 1;
+        min-width: 0;
+        min-height: 42px;
+    }
+
+    .timeline-event-item {
+        gap: 8px;
+        padding: 12px;
+        border-radius: 13px;
+    }
+
+    .timeline-event-time {
+        text-align: left;
+    }
+
+    .notification-center {
+        top: 10px;
+        right: 10px;
+    }
+
+    .notification-panel {
+        top: 64px;
+        right: 10px;
+        width: calc(100vw - 20px);
+        max-height: calc(100vh - 76px);
+        border-radius: 16px;
+    }
+
+    .grades-section {
+        padding: 18px 12px 14px;
+    }
+
+    .grades-heading {
+        gap: 10px;
+    }
+
+    .grades-eyebrow {
+        display: none;
+    }
+
+    .grades-heading .section-title {
+        font-size: 1.16rem;
+        letter-spacing: 0;
+    }
+
+    .grades-summary {
+        gap: 6px;
+    }
+
+    .grades-scope,
+    .grades-count {
+        min-height: 32px;
+        padding: 6px 10px;
+    }
+
+    .grades-table tbody {
+        gap: 12px;
+    }
+
+    .grades-table tbody tr {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+        padding: 16px;
+        border-color: rgba(71, 85, 105, 0.58);
+        border-radius: 16px;
+        background: linear-gradient(145deg, rgba(10, 20, 37, 0.98), rgba(7, 15, 29, 0.98));
+        box-shadow: 0 12px 30px rgba(2, 6, 23, 0.2);
+    }
+
+    .grades-table td,
+    .grades-table tbody tr:nth-child(even) td,
+    .grades-table tbody tr:hover td {
+        grid-template-columns: 1fr;
+        align-content: start;
+        gap: 5px;
+        min-width: 0;
+        padding: 4px 0;
+        color: #dce6f5;
+        font-size: 0.84rem;
+    }
+
+    .grades-table td::before {
+        color: #8fa1bb;
+        font-size: 0.66rem;
+        letter-spacing: 0.02em;
+    }
+
+    .grades-table .grade-name {
+        grid-column: 1 / -1;
+        min-width: 0;
+        margin-bottom: 2px;
+        padding: 0 0 13px;
+        overflow-wrap: anywhere;
+        border-bottom: 1px solid rgba(71, 85, 105, 0.58);
+        font-size: 1rem;
+        line-height: 1.45 !important;
+    }
+
+    .grades-table td[data-label="年度"],
+    .grades-table td[data-label="学期"],
+    .grades-table td[data-label="時間割コード"] {
+        grid-column: span 2;
+    }
+
+    .grades-table .grade-teacher {
+        grid-column: 1 / -1;
+        grid-template-columns: 58px minmax(0, 1fr);
+        align-items: center;
+        margin-top: 2px;
+        padding: 9px 0;
+        border-top: 1px solid rgba(51, 65, 85, 0.44);
+    }
+
+    .grades-table td[data-label="評価"],
+    .grades-table td[data-label="評語"],
+    .grades-table td[data-label="合否"] {
+        grid-column: span 2;
+        min-height: 70px;
+        align-content: center;
+        padding: 9px;
+        border: 1px solid rgba(71, 85, 105, 0.35);
+        border-radius: 11px;
+        background: rgba(20, 31, 49, 0.72);
+    }
+
+    .grade-code {
+        width: max-content;
+        max-width: 100%;
+        padding: 3px 6px;
+        overflow: hidden;
+        font-size: 0.7rem;
+        text-overflow: ellipsis;
+    }
+
+    .grade-score {
+        font-size: 1.08rem !important;
+    }
+
+    .grade-mark {
+        width: 32px;
+        height: 32px;
+        border-radius: 10px;
+        font-size: 0.82rem;
+    }
+
+    .grade-result {
+        width: max-content;
+        max-width: 100%;
+        min-width: 0;
+        padding-right: 9px;
+        padding-left: 9px;
+    }
+
+    .app-version {
+        margin-top: 8px;
+        font-size: 0.66rem;
+    }
 }

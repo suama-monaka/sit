@@ -52,41 +52,56 @@ const decodeCsv = (source) => {
     }
 };
 
-const parseSchedule = (source) => {
-    if (!source) return [];
-    if (!Buffer.isBuffer(source) && !fs.existsSync(source)) return [];
+const parseSingleSchedule = (source) => {
+    if (!source) return null;
+    if (!Buffer.isBuffer(source) && !fs.existsSync(source)) return null;
 
-    try {
-        const rows = parseCsv(decodeCsv(source));
-        const headerIndex = rows.findIndex((row) => row.some((cell) => cell === '月曜日'));
-        if (headerIndex < 0) return [];
+    const rows = parseCsv(decodeCsv(source));
+    const headerIndex = rows.findIndex((row) => row.some((cell) => cell === '月曜日'));
+    if (headerIndex < 0) return [];
 
-        const schedule = [];
-        const startDataRow = headerIndex + 1;
-        for (let period = 1; period <= 5; period += 1) {
-            const baseRow = startDataRow + (period - 1) * 4;
-            for (let dayIndex = 0; dayIndex < 5; dayIndex += 1) {
-                const column = dayIndex + 1;
-                const code = rows[baseRow] && rows[baseRow][column];
-                const name = rows[baseRow + 1] && rows[baseRow + 1][column];
-                const teacher = rows[baseRow + 2] && rows[baseRow + 2][column];
-                if (code && code !== '未登録' && code.length > 2) {
-                    schedule.push({
-                        period,
-                        day: dayIndex + 1,
-                        name: name || '',
-                        code,
-                        teacher: teacher || ''
-                    });
-                }
+    const schedule = [];
+    const startDataRow = headerIndex + 1;
+    for (let period = 1; period <= 5; period += 1) {
+        const baseRow = startDataRow + (period - 1) * 4;
+        for (let dayIndex = 0; dayIndex < 5; dayIndex += 1) {
+            const column = dayIndex + 1;
+            const code = rows[baseRow] && rows[baseRow][column];
+            const name = rows[baseRow + 1] && rows[baseRow + 1][column];
+            const teacher = rows[baseRow + 2] && rows[baseRow + 2][column];
+            if (code && code !== '未登録' && code.length > 2) {
+                schedule.push({
+                    period,
+                    day: dayIndex + 1,
+                    name: name || '',
+                    code,
+                    teacher: teacher || ''
+                });
             }
         }
-        return schedule;
+    }
+    return schedule;
+};
+
+const parseTermSchedule = (source) => {
+    try {
+        return parseSingleSchedule(source);
     } catch (error) {
         console.error('[Schedule Parse Error]:', error.message || error);
-        return [];
+        return null;
     }
+};
+
+const parseSchedule = (source) => {
+    if (source && typeof source === 'object' && !Buffer.isBuffer(source) && ('first' in source || 'second' in source)) {
+        return {
+            first: parseTermSchedule(source.first),
+            second: parseTermSchedule(source.second)
+        };
+    }
+    return parseTermSchedule(source) || [];
 };
 
 module.exports = parseSchedule;
 module.exports.parseCsv = parseCsv;
+module.exports.parseSingleSchedule = parseSingleSchedule;

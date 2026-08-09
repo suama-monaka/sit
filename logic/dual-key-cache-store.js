@@ -94,6 +94,9 @@ const normalizePersistedCache = (cacheEntry, password) => ({
     courses: cacheEntry.courses,
     tasks: cacheEntry.tasks,
     attendance: Array.isArray(cacheEntry.attendance) ? cacheEntry.attendance : [],
+    grades: cacheEntry.grades && Array.isArray(cacheEntry.grades.records)
+        ? cacheEntry.grades
+        : { scope: '', records: [] },
     cachedAt: cacheEntry.cachedAt,
     lastErrors: cacheEntry.lastErrors,
     attendanceDebug: cacheEntry.attendanceDebug || null
@@ -522,7 +525,8 @@ class DualKeyCacheStore {
                     attendance BLOB NOT NULL,
                     cached_at TEXT,
                     last_errors BLOB NOT NULL,
-                    attendance_debug BLOB NOT NULL
+                    attendance_debug BLOB NOT NULL,
+                    grades BLOB NOT NULL
                 );
             `);
             database.run(`
@@ -537,8 +541,9 @@ class DualKeyCacheStore {
                     attendance,
                     cached_at,
                     last_errors,
-                    attendance_debug
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    attendance_debug,
+                    grades
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `, [
                 normalizedId,
                 new Uint8Array(passwordHash),
@@ -551,7 +556,12 @@ class DualKeyCacheStore {
                 ),
                 cacheEntry.cachedAt || null,
                 serializeValue(cacheEntry.lastErrors),
-                serializeValue(cacheEntry.attendanceDebug || null)
+                serializeValue(cacheEntry.attendanceDebug || null),
+                serializeValue(
+                    cacheEntry.grades && Array.isArray(cacheEntry.grades.records)
+                        ? cacheEntry.grades
+                        : { scope: '', records: [] }
+                )
             ]);
             return Buffer.from(database.export());
         } finally {
@@ -579,6 +589,7 @@ class DualKeyCacheStore {
                 (schema[0] && schema[0].values || []).map((column) => column[1])
             );
             const hasCredentialSecret = columnNames.has('credential_secret');
+            const hasGrades = columnNames.has('grades');
             const result = database.exec(`
                 SELECT
                     identity,
@@ -590,7 +601,8 @@ class DualKeyCacheStore {
                     attendance,
                     cached_at,
                     last_errors,
-                    attendance_debug
+                    attendance_debug,
+                    ${hasGrades ? 'grades' : 'NULL AS grades'}
                 FROM cache_record
                 WHERE singleton = 1
             `);
@@ -639,7 +651,10 @@ class DualKeyCacheStore {
                 attendance: deserializeValue(row[5 + valueOffset]),
                 cachedAt: row[6 + valueOffset],
                 lastErrors: deserializeValue(row[7 + valueOffset]),
-                attendanceDebug: deserializeValue(row[8 + valueOffset])
+                attendanceDebug: deserializeValue(row[8 + valueOffset]),
+                grades: hasGrades
+                    ? deserializeValue(row[9 + valueOffset])
+                    : { scope: '', records: [] }
             }, storedPassword);
         } catch (error) {
             if (

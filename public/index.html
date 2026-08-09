@@ -9,6 +9,29 @@
 </head>
 <body>
     <div id="datetime-display" class="datetime-display" aria-live="polite"></div>
+    <div id="notification-center" class="notification-center">
+        <button id="notification-toggle" class="notification-button" type="button" aria-label="通知を開く" aria-expanded="false" aria-controls="notification-panel">
+            <svg class="notification-bell" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
+                <path d="M10 21h4"></path>
+            </svg>
+            <span id="notification-badge" class="notification-badge">1</span>
+        </button>
+        <section id="notification-panel" class="notification-panel hidden" role="dialog" aria-modal="false" aria-labelledby="notification-title" aria-hidden="true">
+            <div class="notification-panel-header">
+                <h2 id="notification-title">通知</h2>
+                <button id="notification-close" class="notification-close" type="button" aria-label="通知を閉じる">×</button>
+            </div>
+            <a id="extension-notification" class="notification-item" href="https://chromewebstore.google.com/detail/auto-login/ilpaiadckknlejgempkbdabohnjcgoeh?pli=1" target="_blank" rel="noopener noreferrer">
+                <span class="notification-item-body">
+                    <strong>SIT Auto Login 拡張機能（任意）</strong>
+                    <span>自動ログインを利用する場合はChromeウェブストアから追加できます。</span>
+                    <small id="extension-detection-status">拡張機能を確認中...</small>
+                </span>
+            </a>
+            <div id="notification-empty" class="notification-empty" hidden>新しい通知はありません。</div>
+        </section>
+    </div>
     <main class="app-shell">
         <section id="login-container" class="container auth-page">
             <div class="auth-card">
@@ -16,8 +39,8 @@
                     <h1>SIT Sync</h1>
                 </div>
                 <div class="auth-fields">
-                    <label class="sr-only" for="username_input">学籍番号</label>
-                    <input type="text" id="username_input" name="username" autocomplete="off" spellcheck="false" placeholder="学籍番号">
+                    <label class="sr-only" for="username_input">ID</label>
+                    <input type="text" id="username_input" name="username" autocomplete="off" spellcheck="false" placeholder="ID">
                     <label class="sr-only" for="password_input">パスワード</label>
                     <input type="password" id="password_input" name="password" autocomplete="off" placeholder="パスワード">
                     <button id="sync-btn" type="button" class="action-button">同期を開始</button>
@@ -59,6 +82,10 @@
 
             <section class="dashboard-section">
                 <div class="section-title">時間割</div>
+                <div id="schedule-semester-switch" class="semester-switch" role="tablist" aria-label="表示する学期" hidden>
+                    <button class="semester-button active" type="button" role="tab" data-semester="first" aria-selected="true">前学期</button>
+                    <button class="semester-button" type="button" role="tab" data-semester="second" aria-selected="false">後学期</button>
+                </div>
                 <div id="schedule-list"></div>
             </section>
 
@@ -71,6 +98,17 @@
                     <div class="section-title">Assignments</div>
                     <div id="task-list"></div>
                 </div>
+            </section>
+
+            <section class="dashboard-section grades-section">
+                <div class="grades-heading">
+                    <div>
+                        <div class="grades-eyebrow">ACADEMIC RECORD</div>
+                        <div class="section-title">履修成績</div>
+                    </div>
+                    <div id="grades-summary" class="grades-summary"></div>
+                </div>
+                <div id="grades-list"></div>
             </section>
 
             <div id="detail-panel" class="detail-panel hidden" role="dialog" aria-modal="true" aria-labelledby="detail-subtitle">
@@ -94,7 +132,7 @@
             </div>
         </section>
     </main>
-    <div id="app-version" class="app-version">v2.3.0</div>
+    <div id="app-version" class="app-version">v2.12.0</div>
     <script type="module" src="app.js"></script>
 </body>
 </html>

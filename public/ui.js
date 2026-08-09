@@ -8,6 +8,8 @@ const periodTimes = {
     4: '14:40 ～ 16:10',
     5: '16:20 ～ 17:50'
 };
+let selectedScheduleSemester = 'first';
+let currentScheduleTerms = null;
 
 const escapeHtml = (text) => {
     return String(text)
@@ -53,7 +55,7 @@ const scrollScheduleToCurrentPosition = () => {
     targetElement.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
 };
 
-export const renderSchedule = (data) => {
+const renderScheduleGrid = (schedule) => {
     const { weekday, currentPeriod } = getCurrentSchedulePosition();
     const isWeekend = new Date().getDay() === 0 || new Date().getDay() === 6;
     const headerHtml = `<div class="grid-header"></div>${days.map((d, index) => `<div class="grid-header${index === weekday && !isWeekend ? ' current-day' : ''}">${d}</div>`).join('')}`;
@@ -62,7 +64,7 @@ export const renderSchedule = (data) => {
     for (let p = 1; p <= 5; p++) {
         bodyHtml += `<div class="period-label"><div class="period-number">${p}限</div><div class="period-time">${periodTimes[p]}</div></div>`;
         for (let d = 1; d <= 5; d++) {
-            const cell = data.schedule.find(s => s.period === p && s.day === d);
+            const cell = schedule.find(s => s.period === p && s.day === d);
             const isRegistered = cell && !(cell.code || '').trim().includes('未登録');
             let content = `<div class="empty-text">未登録</div>`;
             let cellClass = 'grid-cell empty-slot';
@@ -89,6 +91,46 @@ export const renderSchedule = (data) => {
     setTimeout(scrollScheduleToCurrentPosition, 600);
 };
 
+const updateSemesterSwitch = () => {
+    const switcher = document.getElementById('schedule-semester-switch');
+    if (!switcher || !currentScheduleTerms) return;
+    const available = ['first', 'second'].filter((term) => Array.isArray(currentScheduleTerms[term]));
+    if (!available.includes(selectedScheduleSemester)) {
+        selectedScheduleSemester = available[0] || 'first';
+    }
+    switcher.hidden = available.length < 2;
+    switcher.querySelectorAll('.semester-button').forEach((button) => {
+        const term = button.dataset.semester;
+        const active = term === selectedScheduleSemester;
+        button.disabled = !available.includes(term);
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+        button.onclick = () => {
+            if (!Array.isArray(currentScheduleTerms[term])) return;
+            selectedScheduleSemester = term;
+            updateSemesterSwitch();
+            renderScheduleGrid(currentScheduleTerms[term]);
+        };
+    });
+};
+
+export const renderSchedule = (data) => {
+    const source = data && data.schedule;
+    if (Array.isArray(source)) {
+        currentScheduleTerms = null;
+        const switcher = document.getElementById('schedule-semester-switch');
+        if (switcher) switcher.hidden = true;
+        renderScheduleGrid(source);
+        return;
+    }
+    currentScheduleTerms = {
+        first: source && Array.isArray(source.first) ? source.first : null,
+        second: source && Array.isArray(source.second) ? source.second : null
+    };
+    updateSemesterSwitch();
+    renderScheduleGrid(currentScheduleTerms[selectedScheduleSemester] || []);
+};
+
 export const renderList = (id, list) => {
     const html = list && list.length ? list.map(item => {
         const title = typeof item === 'string' ? item : item.name || item.title;
@@ -98,6 +140,50 @@ export const renderList = (id, list) => {
             : `<div class="card course-card">${escapeHtml(title)}</div>`;
     }).join('') : 'データなし';
     document.getElementById(id).innerHTML = html;
+};
+
+export const renderGrades = (grades) => {
+    const summary = document.getElementById('grades-summary');
+    const list = document.getElementById('grades-list');
+    if (!summary || !list) return;
+    const records = grades && Array.isArray(grades.records) ? grades.records : [];
+    const scope = grades && typeof grades.scope === 'string' ? grades.scope : '';
+    summary.innerHTML = `
+        ${scope ? `<span class="grades-scope"><span>対象</span><strong>${escapeHtml(scope)}</strong></span>` : ''}
+        <span class="grades-count"><strong>${records.length}</strong><span>科目</span></span>
+    `;
+    if (!records.length) {
+        list.innerHTML = '<div class="card course-card">成績データなし</div>';
+        return;
+    }
+    const rows = records.map((record) => {
+        const result = String(record.result || '');
+        const resultClass = /不合|否/.test(result) ? 'grade-result-fail' : /合/.test(result) ? 'grade-result-pass' : '';
+        const grade = String(record.grade || '');
+        const gradeClass = /^[SABC]$/.test(grade) ? `grade-mark-${grade.toLowerCase()}` : '';
+        return `
+            <tr>
+                <td class="grade-meta" data-label="年度">${escapeHtml(record.year || '')}</td>
+                <td class="grade-meta" data-label="学期">${escapeHtml(record.term || '')}</td>
+                <td data-label="時間割コード"><span class="grade-code">${escapeHtml(record.code || '')}</span></td>
+                <td class="grade-name" data-label="科目名">${escapeHtml(record.name || '')}</td>
+                <td class="grade-teacher" data-label="教員名">${escapeHtml(record.teacher || '')}</td>
+                <td class="grade-score" data-label="評価">${escapeHtml(record.score || '')}</td>
+                <td data-label="評語"><span class="grade-mark ${gradeClass}">${escapeHtml(grade)}</span></td>
+                <td data-label="合否"><span class="grade-result ${resultClass}">${escapeHtml(result)}</span></td>
+            </tr>
+        `;
+    }).join('');
+    list.innerHTML = `
+        <div class="grades-table-wrap" role="region" aria-label="履修成績一覧" tabindex="0">
+            <table class="grades-table">
+                <caption class="sr-only">履修成績一覧</caption>
+                <colgroup><col class="grade-col-year"><col class="grade-col-term"><col class="grade-col-code"><col class="grade-col-name"><col class="grade-col-teacher"><col class="grade-col-score"><col class="grade-col-mark"><col class="grade-col-result"></colgroup>
+                <thead><tr><th>年度</th><th>学期</th><th>時間割コード</th><th>科目名</th><th>教員名</th><th>評価</th><th>評語</th><th>合否</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
 };
 
 export const renderAssignments = (id, tasks) => {
@@ -146,7 +232,9 @@ export const setCacheInfo = (cachedAt, label = 'キャッシュ') => {
 };
 
 export const fillLoadingPlaceholders = () => {
-    ['schedule-list', 'course-list', 'task-list'].forEach(elId => {
+    const switcher = document.getElementById('schedule-semester-switch');
+    if (switcher) switcher.hidden = true;
+    ['schedule-list', 'course-list', 'task-list', 'grades-list'].forEach(elId => {
         const node = document.getElementById(elId);
         if (node) node.innerHTML = '<div class="loading">取得中...</div>';
     });

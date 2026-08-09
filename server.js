@@ -10,16 +10,16 @@ const {
     createDualKeyCacheStore
 } = require('./logic/dual-key-cache-store');
 
-const fetchCampusFile = require('./logic/campus');
-const parseSchedule = require('./logic/campuss');
-const fetchMoodle = require('./logic/moodle');
-const fetchAssignments = require('./logic/assignments');
-const fetchAttendance = require('./logic/attendance');
+const {
+    createDashboardService,
+    normalizeClassInfo
+} = require('./logic/dashboard-service');
+const { createLoginAuditStore } = require('./logic/login-audit-store');
 
 const app = express();
-const PORT = 10000;
+const PORT = 4007;
 const HOST = '0.0.0.0';
-const MAX_CONCURRENT_BROWSERS = 3;
+const MAX_CONCURRENT_BROWSERS = 12;
 const MAX_QUEUED_BROWSER_JOBS = 12;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_SESSIONS = 1000;
@@ -55,6 +55,10 @@ if (!serverSecret && process.env[SERVER_SECRET_STDIN_ENV] === '1') {
 const cacheStore = createDualKeyCacheStore({
     cacheRoot: CACHE_ROOT,
     adminPublicConfigPath: path.join(__dirname, 'config', 'admin-public-key.bin'),
+    serverSecret
+});
+const loginAuditStore = createLoginAuditStore({
+    databasePath: path.join(CACHE_ROOT, 'data.db'),
     serverSecret
 });
 serverSecret = undefined;
@@ -139,34 +143,6 @@ app.use('/api', (req, res, next) => {
 const normalizeId = (id) => String(id || '').trim().toUpperCase();
 const isValidId = (id) => /^[A-Z0-9_-]{1,64}$/.test(id);
 const isValidPassword = (password) => typeof password === 'string' && password.length >= 1 && password.length <= 256;
-const hashPassword = (password) => crypto.createHash('sha256').update(password).digest('hex');
-const passwordHashesEqual = (left, right) => {
-    const leftBytes = Buffer.from(String(left || ''), 'hex');
-    const rightBytes = Buffer.from(String(right || ''), 'hex');
-    return leftBytes.length === 32 &&
-        rightBytes.length === 32 &&
-        crypto.timingSafeEqual(leftBytes, rightBytes);
-};
-
-const normalizeClassInfo = (value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const result = {};
-    for (const key of ['code', 'name', 'teacher']) {
-        if (value[key] !== undefined) {
-            if (typeof value[key] !== 'string' || value[key].length > 256) return null;
-            result[key] = value[key];
-        }
-    }
-    for (const key of ['day', 'period']) {
-        if (value[key] !== undefined) {
-            const number = Number(value[key]);
-            if (!Number.isInteger(number) || number < 1 || number > 7) return null;
-            result[key] = number;
-        }
-    }
-    return result;
-};
-
 const parseCookies = (header) => {
     const result = {};
     for (const item of String(header || '').split(';')) {
@@ -386,177 +362,31 @@ const withBrowser = async (task) => {
     }
 };
 
-const loadCacheFromFile = async (id, password) => cacheStore.loadWithUserCredentials(id, password);
-const saveCacheToFile = async (id, entry) => cacheStore.saveWithUserCredentials(id, entry.password, entry);
-
-const loadCacheEntry = async (id, password) => {
-    const suppliedHash = hashPassword(password);
-    const inMemory = userCache.get(id);
-    if (inMemory) {
-        if (!passwordHashesEqual(inMemory.pwHash, suppliedHash)) {
-            throw new InvalidCredentialsError();
-        }
-        return inMemory;
-    }
-    const stored = await loadCacheFromFile(id, password);
-    if (!stored) return null;
-    const entry = {
-        ...stored,
-        password,
-        attendance: Array.isArray(stored.attendance) ? stored.attendance : [],
-        refreshing: false,
-        refreshPromise: null
-    };
-    userCache.set(id, entry);
-    return entry;
-};
-
-const loadNewData = async (id, password) => {
-    const operations = [
-        withBrowser(async (browser) => parseSchedule(await fetchCampusFile(browser, id, password))),
-        withBrowser((browser) => fetchMoodle(browser, id, password)),
-        withBrowser((browser) => fetchAssignments(browser, id, password)),
-        withBrowser((browser) => fetchAttendance(browser, id, password))
-    ];
-    const [campusResult, moodleResult, assignmentResult, attendanceResult] = await Promise.allSettled(operations);
-    const result = {
-        campusData: [],
-        courses: [],
-        tasks: [],
-        attendance: [],
-        campusError: null,
-        moodleError: null,
-        assignmentError: null,
-        attendanceError: null
-    };
-    if (campusResult.status === 'fulfilled') result.campusData = campusResult.value;
-    else result.campusError = campusResult.reason;
-    if (moodleResult.status === 'fulfilled') result.courses = moodleResult.value;
-    else result.moodleError = moodleResult.reason;
-    if (assignmentResult.status === 'fulfilled') result.tasks = assignmentResult.value;
-    else result.assignmentError = assignmentResult.reason;
-    if (attendanceResult.status === 'fulfilled') result.attendance = attendanceResult.value.attendance || [];
-    else result.attendanceError = attendanceResult.reason;
-    for (const [name, error] of [
-        ['Campus', result.campusError],
-        ['Moodle', result.moodleError],
-        ['Assignments', result.assignmentError],
-        ['Attendance', result.attendanceError]
-    ]) {
-        if (error) console.error(`[Load ${name} Error]:`, error.message || error);
-    }
-    return result;
-};
-
-const safeMoodleUrl = (value) => {
-    try {
-        const url = new URL(String(value || ''));
-        if (
-            url.protocol !== 'https:' ||
-            url.hostname !== 'moodle2026.shonan-it.ac.jp' ||
-            url.port ||
-            url.username ||
-            url.password
-        ) {
-            return null;
-        }
-        return url.href;
-    } catch {
-        return null;
-    }
-};
-
-const publicData = (entry) => ({
-    campus: entry.campus,
-    schedule: entry.campus,
-    courses: Array.isArray(entry.courses)
-        ? entry.courses.map((course) => (
-            typeof course === 'string'
-                ? course
-                : { ...course, url: safeMoodleUrl(course && course.url) }
-        ))
-        : [],
-    tasks: Array.isArray(entry.tasks)
-        ? entry.tasks.map((group) => ({
-            ...group,
-            tasks: Array.isArray(group && group.tasks)
-                ? group.tasks.map((task) => ({
-                    ...task,
-                    url: safeMoodleUrl(task && task.url)
-                }))
-                : []
-        }))
-        : [],
-    attendance: entry.attendance || []
+const {
+    fetchAttendanceForClass,
+    loadCacheEntry,
+    loadNewData,
+    publicData,
+    refreshCache,
+    saveCacheToFile,
+    updateCacheWithPartialResult
+} = createDashboardService({
+    cacheStore,
+    withBrowser,
+    userCache,
+    releaseUserIfUnused
 });
-
-const updateCacheWithPartialResult = async (id, entry, result) => {
-    let updated = false;
-    if (!result.campusError) {
-        entry.campus = result.campusData;
-        updated = true;
-    }
-    if (!result.moodleError) {
-        entry.courses = result.courses;
-        updated = true;
-    }
-    if (!result.assignmentError) {
-        entry.tasks = result.tasks;
-        updated = true;
-    }
-    if (!result.attendanceError) {
-        entry.attendance = result.attendance;
-        updated = true;
-    }
-    entry.lastErrors = {
-        campus: result.campusError ? '取得に失敗しました' : null,
-        moodle: result.moodleError ? '取得に失敗しました' : null,
-        assignments: result.assignmentError ? '取得に失敗しました' : null,
-        attendance: result.attendanceError ? '取得に失敗しました' : null
-    };
-    if (updated) {
-        entry.cachedAt = new Date().toISOString();
-        await saveCacheToFile(id, entry);
-    }
-    return updated;
-};
-
-const refreshCache = async (id, password) => {
-    const entry = userCache.get(id);
-    if (!entry) throw new Error('キャッシュエントリが存在しません');
-    if (entry.refreshing) {
-        return { alreadyRefreshing: true, cachedAt: entry.cachedAt };
-    }
-    entry.refreshing = true;
-    entry.refreshPromise = (async () => {
-        try {
-            const result = await loadNewData(id, password);
-            const updated = await updateCacheWithPartialResult(id, entry, result);
-            return {
-                alreadyRefreshing: false,
-                updated,
-                cachedAt: entry.cachedAt,
-                errors: entry.lastErrors,
-                data: publicData(entry)
-            };
-        } finally {
-            entry.refreshing = false;
-            entry.refreshPromise = null;
-            releaseUserIfUnused(id);
-        }
-    })();
-    return entry.refreshPromise;
-};
 
 app.post('/api/login', loginLimiter, async (req, res, next) => {
     const id = normalizeId(req.body && req.body.id);
     const password = req.body && req.body.pw;
     if (!isValidId(id) || !isValidPassword(password)) {
-        return res.status(400).json({ error: '学籍番号またはパスワードの形式が正しくありません' });
+        return res.status(400).json({ error: 'IDまたはパスワードの形式が正しくありません' });
     }
     try {
         const cachedEntry = await loadCacheEntry(id, password);
         if (cachedEntry) {
+            await loginAuditStore.recordSuccessfulLogin(id);
             createSession(req, res, id);
             const updating = !DISABLE_BACKGROUND_REFRESH;
             res.json({
@@ -585,6 +415,7 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
             courses: result.courses,
             tasks: result.tasks,
             attendance: result.attendance || [],
+            grades: result.gradesData,
             cachedAt: new Date().toISOString(),
             refreshing: false,
             refreshPromise: null,
@@ -592,12 +423,14 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
                 campus: null,
                 moodle: result.moodleError ? '取得に失敗しました' : null,
                 assignments: result.assignmentError ? '取得に失敗しました' : null,
-                attendance: result.attendanceError ? '取得に失敗しました' : null
+                attendance: result.attendanceError ? '取得に失敗しました' : null,
+                grades: result.gradesError ? '取得に失敗しました' : null
             },
             attendanceDebug: null
         };
         userCache.set(id, entry);
         await saveCacheToFile(id, entry);
+        await loginAuditStore.recordSuccessfulLogin(id);
         createSession(req, res, id);
         res.json({
             authenticated: true,
@@ -677,7 +510,7 @@ app.post('/api/attendance', requireSession, async (req, res, next) => {
     const { id, password } = req.auth;
     try {
         const entry = await loadCacheEntry(id, password);
-        const attendance = await withBrowser((browser) => fetchAttendance(browser, id, password, classInfo));
+        const attendance = await fetchAttendanceForClass(id, password, classInfo);
         if (entry) {
             entry.attendanceDebug = {
                 lastFetchedAt: new Date().toISOString(),
@@ -730,6 +563,7 @@ cleanupTimer.unref();
 
 const start = async () => {
     const issues = await cacheStore.ready();
+    await loginAuditStore.ready();
     if (Array.isArray(issues)) {
         for (const issue of issues) console.error('[Cache Recovery]:', issue);
     }
