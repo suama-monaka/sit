@@ -253,6 +253,7 @@ const createDashboardService = ({ appVersion, cacheStore, withBrowser, userCache
 
 module.exports = {
     createDashboardService,
+    hashPassword,
     normalizeClassInfo,
     publicData,
     safeMoodleUrl

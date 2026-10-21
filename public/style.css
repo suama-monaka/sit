@@ -261,8 +261,13 @@ input {
 }
 
 .menu-button {
+    position: fixed;
+    top: 20px;
+    left: 20px;
     width: 44px;
+    min-width: 44px;
     height: 44px;
+    min-height: 44px;
     padding: 0;
     border: none;
     background: #2563eb;
@@ -273,9 +278,9 @@ input {
     justify-content: center;
     cursor: pointer;
     transition: background 0.2s ease, transform 0.1s ease;
-    position: relative;
     z-index: 1200;
     flex-shrink: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 .menu-button:hover {
@@ -1834,6 +1839,8 @@ body.modal-open {
     }
 
     .menu-button {
+        top: 10px;
+        left: 10px;
         width: 42px;
         min-width: 42px;
         height: 42px;

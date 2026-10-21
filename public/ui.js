@@ -8,8 +8,10 @@ const periodTimes = {
     4: '14:40 ～ 16:10',
     5: '16:20 ～ 17:50'
 };
-let selectedScheduleSemester = 'first';
+const getInitialScheduleSemester = (date = new Date()) => date.getMonth() < 7 ? 'first' : 'second';
+let selectedScheduleSemester = getInitialScheduleSemester();
 let currentScheduleTerms = null;
+let currentCourses = [];
 
 const escapeHtml = (text) => {
     return String(text)
@@ -110,6 +112,7 @@ const updateSemesterSwitch = () => {
             selectedScheduleSemester = term;
             updateSemesterSwitch();
             renderScheduleGrid(currentScheduleTerms[term]);
+            renderSelectedCourses();
         };
     });
 };
@@ -140,6 +143,29 @@ export const renderList = (id, list) => {
             : `<div class="card course-card">${escapeHtml(title)}</div>`;
     }).join('') : 'データなし';
     document.getElementById(id).innerHTML = html;
+};
+
+const getCourseTitle = (course) => typeof course === 'string'
+    ? course
+    : course && (course.name || course.title) || '';
+
+const isCourseInSemester = (course, semester) => {
+    const title = getCourseTitle(course);
+    const isFirstSemester = title.includes('前学期');
+    const isSecondSemester = title.includes('後学期');
+
+    if (!isFirstSemester && !isSecondSemester) return true;
+    return semester === 'first' ? isFirstSemester : isSecondSemester;
+};
+
+const renderSelectedCourses = () => {
+    const courses = currentCourses.filter((course) => isCourseInSemester(course, selectedScheduleSemester));
+    renderList('course-list', courses);
+};
+
+export const renderCourses = (courses) => {
+    currentCourses = Array.isArray(courses) ? courses : [];
+    renderSelectedCourses();
 };
 
 export const renderGrades = (grades) => {

@@ -32,49 +32,74 @@ $chromeDestination = [IO.Path]::GetFullPath((Join-Path $appsRoot 'chrome'))
 $stageRoot = [IO.Path]::GetFullPath((Join-Path $appsRoot ('.setup-' + [guid]::NewGuid().ToString('N'))))
 $serverSecretCreated = $false
 if ([string]::IsNullOrWhiteSpace($env:SIT_SERVER_SECRET)) {
-    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        throw 'LocalAppData was not found.'
-    }
-    $serverSecretDirectory = Join-Path $env:LOCALAPPDATA 'SIT-Dashboard'
-    $serverSecretPath = Join-Path $serverSecretDirectory 'server-secret.dpapi'
-    $entropyProvider = [Security.Cryptography.SHA256]::Create()
-    $entropy = $entropyProvider.ComputeHash(
-        [Text.Encoding]::UTF8.GetBytes('SIT-Dashboard server secret v1')
-    )
-    $entropyProvider.Dispose()
-    if (-not (Test-Path -LiteralPath $serverSecretPath -PathType Leaf)) {
+    $serverSecretDirectory = Join-Path $root 'SIT-Dashboard'
+    $serverSecretPath = Join-Path $serverSecretDirectory 'server-secret.key'
+    if (Test-Path -LiteralPath $serverSecretPath -PathType Leaf) {
+        $env:SIT_SERVER_SECRET = [IO.File]::ReadAllText($serverSecretPath).Trim()
+    } else {
         New-Item -ItemType Directory -Path $serverSecretDirectory -Force | Out-Null
-        $serverSecretBytes = New-Object byte[] 32
-        $randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $serverSecretBytes = $null
+        $entropy = $null
         try {
-            $randomGenerator.GetBytes($serverSecretBytes)
-            $protectedSecret = [System.Security.Cryptography.ProtectedData]::Protect(
-                $serverSecretBytes,
-                $entropy,
-                [Security.Cryptography.DataProtectionScope]::CurrentUser
+            $entropyProvider = [Security.Cryptography.SHA256]::Create()
+            try {
+                $entropy = $entropyProvider.ComputeHash(
+                    [Text.Encoding]::UTF8.GetBytes('SIT-Dashboard server secret v1')
+                )
+            } finally {
+                $entropyProvider.Dispose()
+            }
+            $legacyCandidates = @(
+                (Join-Path $serverSecretDirectory 'server-secret.dpapi')
             )
-            [IO.File]::WriteAllBytes($serverSecretPath, $protectedSecret)
-            $serverSecretCreated = $true
+            if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                $legacyCandidates += Join-Path $env:LOCALAPPDATA 'SIT-Dashboard\server-secret.dpapi'
+            }
+            foreach ($legacyPath in @($legacyCandidates | Select-Object -Unique)) {
+                if (-not (Test-Path -LiteralPath $legacyPath -PathType Leaf)) {
+                    continue
+                }
+                try {
+                    $candidate = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                        [IO.File]::ReadAllBytes($legacyPath),
+                        $entropy,
+                        [Security.Cryptography.DataProtectionScope]::CurrentUser
+                    )
+                    if ($candidate.Length -eq 32) {
+                        $serverSecretBytes = $candidate
+                        Write-Host "Imported the legacy server secret into $serverSecretPath"
+                        break
+                    }
+                    [Array]::Clear($candidate, 0, $candidate.Length)
+                } catch {
+                    Write-Warning "Legacy server secret could not be read on this PC: $legacyPath"
+                }
+            }
+            if (-not $serverSecretBytes) {
+                $serverSecretBytes = New-Object byte[] 32
+                $randomGenerator = [Security.Cryptography.RandomNumberGenerator]::Create()
+                try {
+                    $randomGenerator.GetBytes($serverSecretBytes)
+                } finally {
+                    $randomGenerator.Dispose()
+                }
+                $serverSecretCreated = $true
+                Write-Host "Created a portable server secret at $serverSecretPath"
+            }
+            $env:SIT_SERVER_SECRET = -join ($serverSecretBytes | ForEach-Object { $_.ToString('x2') })
+            [IO.File]::WriteAllText(
+                $serverSecretPath,
+                $env:SIT_SERVER_SECRET,
+                [Text.UTF8Encoding]::new($false)
+            )
         } finally {
-            $randomGenerator.Dispose()
             if ($serverSecretBytes) {
                 [Array]::Clear($serverSecretBytes, 0, $serverSecretBytes.Length)
             }
-            if ($protectedSecret) {
-                [Array]::Clear($protectedSecret, 0, $protectedSecret.Length)
+            if ($entropy) {
+                [Array]::Clear($entropy, 0, $entropy.Length)
             }
         }
-    }
-    $plainServerSecret = [System.Security.Cryptography.ProtectedData]::Unprotect(
-        [IO.File]::ReadAllBytes($serverSecretPath),
-        $entropy,
-        [Security.Cryptography.DataProtectionScope]::CurrentUser
-    )
-    try {
-        $env:SIT_SERVER_SECRET = -join ($plainServerSecret | ForEach-Object { $_.ToString('x2') })
-    } finally {
-        [Array]::Clear($plainServerSecret, 0, $plainServerSecret.Length)
-        [Array]::Clear($entropy, 0, $entropy.Length)
     }
 }
 if ($env:SIT_SERVER_SECRET -notmatch '^[a-fA-F0-9]{64}$') {
@@ -257,7 +282,8 @@ writeAdminPublicConfig(
         }
     }
     $databaseFiles = @(
-        Get-ChildItem -LiteralPath (Join-Path $root 'cache') -Filter '*.db' -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath (Join-Path $root 'cache') -Filter '*.db' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -cmatch '^[A-Z0-9_-]{1,64}$' }
     )
     $migrationRequired = $serverSecretCreated -and $databaseFiles.Count -gt 0
     foreach ($databaseFile in $databaseFiles) {
@@ -289,6 +315,18 @@ writeAdminPublicConfig(
             Remove-Item Env:SIT_ADMIN_DECRYPTION_KEY -ErrorAction SilentlyContinue
             $migrationCredential = $null
             $migrationSecureKey.Dispose()
+        }
+    }
+    if ($serverSecretCreated) {
+        $loginAuditPath = Join-Path $root 'cache\data.db'
+        if (Test-Path -LiteralPath $loginAuditPath -PathType Leaf) {
+            $loginAuditBackup = Join-Path $root (
+                'cache\data.server-secret-replaced-' +
+                [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' +
+                [guid]::NewGuid().ToString('N') + '.bak'
+            )
+            Move-Item -LiteralPath $loginAuditPath -Destination $loginAuditBackup
+            Write-Warning "The old login audit database was archived at $loginAuditBackup"
         }
     }
     $finalNodeVersion = (& $portableNode --version)

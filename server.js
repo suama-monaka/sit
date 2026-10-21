@@ -12,13 +12,19 @@ const {
 
 const {
     createDashboardService,
+    hashPassword,
     normalizeClassInfo
 } = require('./logic/dashboard-service');
 const { createLoginAuditStore } = require('./logic/login-audit-store');
+const { parseCookies } = require('./logic/http-cookies');
+const {
+    AndroidReleaseError,
+    createAndroidReleaseStore
+} = require('./logic/android-release-store');
 const { APP_VERSION } = require('./logic/app-version');
 
 const app = express();
-const PORT = 10000;
+const PORT = 4007;
 const HOST = '0.0.0.0';
 const MAX_CONCURRENT_BROWSERS = 12;
 const MAX_QUEUED_BROWSER_JOBS = 12;
@@ -46,8 +52,11 @@ const PUBLIC_ORIGIN = (() => {
     }
     return url.origin;
 })();
-const PUBLIC_HOST = new URL(PUBLIC_ORIGIN).host.toLowerCase();
 const CACHE_ROOT = path.join(__dirname, 'cache');
+const ANDROID_RELEASE_ROOT = path.join(__dirname, 'releases', 'android');
+const androidReleaseStore = createAndroidReleaseStore({
+    releaseRoot: ANDROID_RELEASE_ROOT
+});
 const SERVER_SECRET_STDIN_ENV = 'SIT_SERVER_SECRET_STDIN';
 let serverSecret = process.env[SERVER_SECRET_ENV];
 if (!serverSecret && process.env[SERVER_SECRET_STDIN_ENV] === '1') {
@@ -87,14 +96,10 @@ const requestHosts = (req) => {
     return hosts;
 };
 
-const isHttpsRequest = (req) => {
-    if (req.secure) return true;
-    if (firstForwardedValue(req.get('x-forwarded-proto')) === 'https') return true;
-    if (String(req.get('origin') || '').toLowerCase() === PUBLIC_ORIGIN.toLowerCase()) {
-        return true;
-    }
-    return requestHosts(req).has(PUBLIC_HOST);
-};
+const isHttpsRequest = (req) => (
+    Boolean(req.secure) ||
+    firstForwardedValue(req.get('x-forwarded-proto')) === 'https'
+);
 
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
@@ -145,22 +150,21 @@ app.use('/api', (req, res, next) => {
 const normalizeId = (id) => String(id || '').trim().toUpperCase();
 const isValidId = (id) => /^[A-Z0-9_-]{1,64}$/.test(id);
 const isValidPassword = (password) => typeof password === 'string' && password.length >= 1 && password.length <= 256;
-const parseCookies = (header) => {
-    const result = {};
-    for (const item of String(header || '').split(';')) {
-        const separator = item.indexOf('=');
-        if (separator < 1) continue;
-        const key = item.slice(0, separator).trim();
-        const value = item.slice(separator + 1).trim();
-        try {
-            result[key] = decodeURIComponent(value);
-        } catch {
-            result[key] = '';
-        }
-    }
-    return result;
+const isAndroidClient = (req) => /^android\/\d+\.\d+\.\d+$/.test(
+    String(req.get('x-sit-client') || '').trim().toLowerCase()
+);
+const dataForClient = (req, entry) => {
+    const data = publicData(entry);
+    if (!isAndroidClient(req)) return data;
+    return {
+        cachedVersion: data.cachedVersion,
+        schedule: data.schedule,
+        courses: data.courses,
+        tasks: data.tasks,
+        attendance: data.attendance,
+        grades: data.grades
+    };
 };
-
 const setSessionCookie = (req, res, token) => {
     res.setHeader(
         'Set-Cookie',
@@ -292,6 +296,57 @@ app.use('/api', express.json({
     type: 'application/json'
 }));
 
+app.get('/api/android/update', async (req, res, next) => {
+    try {
+        const release = await androidReleaseStore.loadLatest();
+        if (!release) {
+            return res.status(404).json({ error: 'Android版の配布ファイルはまだありません' });
+        }
+        const suppliedVersionCode = String(req.query.versionCode || '');
+        const currentVersionCode = /^\d{1,10}$/.test(suppliedVersionCode)
+            ? Number(suppliedVersionCode)
+            : 0;
+        res.json({
+            updateAvailable: release.versionCode > currentVersionCode,
+            versionCode: release.versionCode,
+            versionName: release.versionName,
+            size: release.size,
+            sha256: release.sha256,
+            downloadUrl: `${PUBLIC_ORIGIN}/api/android/releases/${encodeURIComponent(release.fileName)}`
+        });
+    } catch (error) {
+        if (error instanceof AndroidReleaseError) {
+            console.error('[Android Release Error]:', error.message);
+            return res.status(503).json({ error: 'Android版の配布ファイルを検証できません' });
+        }
+        next(error);
+    }
+});
+
+app.get('/api/android/releases/:fileName', async (req, res, next) => {
+    try {
+        const release = await androidReleaseStore.loadLatest();
+        if (!release || req.params.fileName !== release.fileName) {
+            return res.status(404).json({ error: 'Android版の配布ファイルが見つかりません' });
+        }
+        res.set({
+            'Content-Type': 'application/vnd.android.package-archive',
+            'Content-Length': String(release.size),
+            'Content-Disposition': `attachment; filename="${release.fileName}"`,
+            'Cache-Control': 'private, no-cache, no-transform'
+        });
+        res.sendFile(release.filePath, (error) => {
+            if (error) next(error);
+        });
+    } catch (error) {
+        if (error instanceof AndroidReleaseError) {
+            console.error('[Android Release Error]:', error.message);
+            return res.status(503).json({ error: 'Android版の配布ファイルを検証できません' });
+        }
+        next(error);
+    }
+});
+
 app.use(express.static(path.join(__dirname, 'public'), {
     dotfiles: 'deny',
     etag: false,
@@ -380,9 +435,13 @@ const {
     releaseUserIfUnused
 });
 
-app.post('/api/login', loginLimiter, async (req, res, next) => {
+const handleCredentialDataRequest = async (req, res, next) => {
     const id = normalizeId(req.body && req.body.id);
     const password = req.body && req.body.pw;
+    const sendCompleteData = req.path === '/api/client-data';
+    const responseData = (entry) => sendCompleteData
+        ? publicData(entry)
+        : dataForClient(req, entry);
     if (!isValidId(id) || !isValidPassword(password)) {
         return res.status(400).json({ error: 'IDまたはパスワードの形式が正しくありません' });
     }
@@ -395,7 +454,8 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
             res.json({
                 authenticated: true,
                 cached: true,
-                data: publicData(cachedEntry),
+                complete: sendCompleteData,
+                data: responseData(cachedEntry),
                 cachedAt: cachedEntry.cachedAt,
                 cachedVersion: cachedEntry.cachedVersion,
                 updating
@@ -440,7 +500,8 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
         res.json({
             authenticated: true,
             cached: false,
-            data: publicData(entry),
+            complete: sendCompleteData,
+            data: responseData(entry),
             cachedAt: entry.cachedAt,
             cachedVersion: entry.cachedVersion,
             errors: entry.lastErrors,
@@ -456,7 +517,10 @@ app.post('/api/login', loginLimiter, async (req, res, next) => {
         }
         next(error);
     }
-});
+};
+
+app.post('/api/login', loginLimiter, handleCredentialDataRequest);
+app.post('/api/client-data', loginLimiter, handleCredentialDataRequest);
 
 app.post('/api/refresh', requireSession, async (req, res, next) => {
     const { id, password } = req.auth;
@@ -474,7 +538,7 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
                 authenticated: true,
                 cached: true,
                 alreadyRefreshing: false,
-                data: publicData(entry),
+                data: dataForClient(req, entry),
                 cachedAt: entry.cachedAt,
             cachedVersion: entry.cachedVersion,
                 message: '最新のキャッシュデータがあります'
@@ -486,7 +550,8 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
                 authenticated: true,
                 cached: false,
                 alreadyRefreshing: false,
-                ...result
+                ...result,
+                data: dataForClient(req, entry)
             });
         }
         const result = await refreshCache(id, password);
@@ -495,7 +560,7 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
                 authenticated: true,
                 cached: true,
                 alreadyRefreshing: true,
-                data: publicData(entry),
+                data: dataForClient(req, entry),
                 cachedAt: entry.cachedAt,
             cachedVersion: entry.cachedVersion,
                 message: '現在バックグラウンド更新中です'
@@ -505,7 +570,8 @@ app.post('/api/refresh', requireSession, async (req, res, next) => {
             authenticated: true,
             cached: false,
             alreadyRefreshing: false,
-            ...result
+            ...result,
+            data: dataForClient(req, entry)
         });
     } catch (error) {
         next(error);
@@ -577,6 +643,7 @@ const start = async () => {
     }
     const httpServer = app.listen(PORT, HOST, () => {
         console.log(`SIT Dash listening on ${HOST}:${PORT}`);
+        console.log(`バージョン: v${APP_VERSION}`);
         console.log(`Public origin: ${PUBLIC_ORIGIN}`);
         console.log(`最大同時ブラウザ数: ${MAX_CONCURRENT_BROWSERS}`);
     });

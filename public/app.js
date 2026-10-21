@@ -1,5 +1,5 @@
 import { currentUser, login, refreshData, pollRefreshUntilUpdated } from './data.js';
-import { renderSchedule, renderList, renderAssignments, renderGrades, fillLoadingPlaceholders, setCacheInfo, setStatus, setupDetailPanelEvents, openDetailPanel } from './ui.js';
+import { renderSchedule, renderCourses, renderAssignments, renderGrades, fillLoadingPlaceholders, setCacheInfo, setStatus, setupDetailPanelEvents, openDetailPanel } from './ui.js';
 import { reportExtensionLoginResult, setupExtensionNotifications } from './notifications.js';
 
 const cacheInfo = document.getElementById('cache-info');
@@ -32,7 +32,7 @@ const showMainView = () => {
 const renderPageData = (data, sourceLabel = '最新') => {
     if (!data) return;
     if (data.schedule) renderSchedule(data);
-    if (data.courses) renderList('course-list', data.courses);
+    if (data.courses) renderCourses(data.courses);
     if (data.tasks) renderAssignments('task-list', data.tasks);
     renderGrades(data.grades);
     if (data.attendance) {
